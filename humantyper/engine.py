@@ -7,7 +7,7 @@ from typing import Callable, Dict, List, Optional
 
 from .parser import parse, Plan
 from .timing import HumanTiming
-from .locator import choose_occurrence, normalize
+from .locator import choose_occurrence, find_all, normalize
 
 BOUNDARY = " \n\t.!?,;:"
 SLICE = 0.05
@@ -51,6 +51,9 @@ class Settings:
 
 CTX_LEN = 16            # preceding-context anchor for empty-`first` insertions
 COPY_WAIT = 1.0         # max seconds to wait for the clipboard to change after Ctrl+C
+CLIP_MARGIN = 10        # extra chars the backward selection should cover beyond the phrase
+CLIP_EXTRA_WORDS = 1    # ...plus this many more word jumps
+CLIP_TOL = 50           # a partial-window match may sit this far (+n) from where we expect it
 OK, BAD = "✓", "✗"
 
 
@@ -74,6 +77,16 @@ class _Rev:
     @property
     def end(self) -> int:
         return self.start + len(self.first)
+
+
+def _prev_word_start(buf, pos: int) -> int:
+    """Start of the previous word (skip non-word chars, then word chars)."""
+    isw = lambda c: c.isalnum() or c in "_'"
+    while pos > 0 and not isw(buf[pos - 1]):
+        pos -= 1
+    while pos > 0 and isw(buf[pos - 1]):
+        pos -= 1
+    return pos
 
 
 def _word_at(s: str, j: int) -> str:
@@ -111,6 +124,7 @@ class TypingEngine:
         self._kind = "idle"
         self._buf: List[str] = []
         self._cur = 0
+        self._clip_verified: set = set()    # clipboard methods whose Left-collapse was verified this run
 
     # ---- control --------------------------------------------------------
     @property
@@ -352,7 +366,32 @@ class TypingEngine:
         self._log(f"{tag} // locate: UIA {OK}")
         return _Loc("uia", caret - end, text, caret)
 
+    def _word_jumps_for(self, chars: int) -> int:
+        """Ctrl+Left presses (Windows edit-control semantics, modelled on our own
+        buffer) needed to cover `chars` characters back from the caret."""
+        buf = self._buf
+        target = max(0, len(buf) - chars)
+        pos, k = len(buf), 0
+        while pos > target and pos > 0:
+            pos = _prev_word_start(buf, pos)
+            k += 1
+        return k
+
+    def _pick(self, txt: str, anchor: str, n: int, ctx: str, bounded: bool) -> Optional[int]:
+        """Occurrence end offset inside the copied tail `txt`; when the selection is only
+        a partial window (`bounded`) the occurrence must also be plausibly close to where
+        the buffer model expects it (a far-away duplicate is not accepted)."""
+        end = choose_occurrence(txt, anchor, n, ctx)
+        if end is None:
+            return None
+        if bounded and abs((len(txt) - end) - n) > CLIP_TOL + n:
+            return None
+        return end
+
     def _locate_clipboard(self, tag: str, anchor: str, n: int, ctx: str = "") -> Optional[_Loc]:
+        """Caret is at the end of the typed text. Select backwards from it just far
+        enough (Ctrl+Shift+Left word jumps), copy, find `anchor`; collapse with Left
+        (caret -> selection start) and hop Right to the end of `anchor`. No round trip."""
         b = self.backend
         need = ("copy", "shift_left", "select_to_start", "clipboard_seq", "clipboard_get_text",
                 "clipboard_snapshot", "clipboard_restore")
@@ -365,27 +404,52 @@ class TypingEngine:
             return None
         try:
             self._check()
-            b.select_to_start()
-            before = self._copy_text()
-            b.right()                               # collapse selection back to the caret
-            if not before:
-                self._log(f"{tag} // clipboard {BAD} (nothing copied)")
-                return None
-            end = choose_occurrence(before, anchor, n, ctx)
+            grow = getattr(b, "ctrl_shift_left", None)
+            txt: Optional[str] = None
+            end: Optional[int] = None
+            method = "home"
+            prev_len = 0
+            if grow is not None:
+                j0 = self._word_jumps_for(n + len(anchor) + CLIP_MARGIN) + CLIP_EXTRA_WORDS
+                for step in (j0, 6, 20):
+                    for _ in range(step):
+                        self._arrow(grow)
+                    got = self._copy_text()
+                    if not got or len(got) <= prev_len:      # selection did not grow: unsupported / at start
+                        break
+                    txt, prev_len = got, len(got)
+                    end = self._pick(txt, anchor, n, ctx, True)
+                    if end is not None:
+                        method = "word"
+                        break
             if end is None:
-                self._log(f"{tag} // clipboard {BAD} (phrase not found/ambiguous)")
-                return None
-            d = len(before) - end
-            self._press_n(b.left, d)
-            if anchor:
+                # last resort for the selection: everything to the document start (same anchor)
+                b.select_to_start()
+                got = self._copy_text()
+                if got:
+                    txt = got
+                    end = choose_occurrence(txt, anchor, n, ctx)
+                if end is None:
+                    b.right()                       # collapse back to the caret (right edge)
+                    self._log(f"{tag} // clipboard {BAD} ("
+                              + ("phrase not found/ambiguous)" if got else "nothing copied)"))
+                    return None
+            d = len(txt) - end                      # real chars between phrase end and the caret
+            b.left()                                # collapse to the selection START
+            self._press_n(b.right, end)             # short hop to just after the phrase
+            duplicate = len(find_all(txt, anchor)) > 1 if anchor else False
+            if anchor and (method not in self._clip_verified or duplicate):
                 self._press_n(b.shift_left, len(anchor))
                 got = self._copy_text()
                 b.right()                           # collapse to the right edge = phrase end
                 if got != anchor:
-                    self._press_n(b.right, d)       # back to the original caret
+                    self._press_n(b.right, d)       # on to the original caret
                     self._log(f"{tag} // clipboard verify {BAD}")
                     return None
-            self._log(f"{tag} // locate: clipboard {OK}")
+                self._clip_verified.add(method)
+                self._log(f"{tag} // locate: clipboard {OK} ({method}, verified)")
+            else:
+                self._log(f"{tag} // locate: clipboard {OK} ({method})")
             return _Loc("clipboard", d)
         finally:
             try:
@@ -472,6 +536,7 @@ class TypingEngine:
         self.rng = random.Random(self.settings.seed)
         self.timing = HumanTiming(self.settings.wpm, self.rng)
         self._buf, self._cur = [], 0
+        self._clip_verified = set()
         self._total = len(plan.text) + sum(len(r.revised) for r in plan.revisions)
         self._done = 0
         self._nrev = len(plan.revisions)

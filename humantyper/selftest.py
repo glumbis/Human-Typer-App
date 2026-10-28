@@ -18,6 +18,7 @@ def run(report_path=None) -> int:
     def core():
         import humantyper
         from humantyper import app, engine, parser, timing, config, clipboard, hotkeys, backends  # noqa
+        from humantyper.ui import art, overlay, stats, widgets, winutil  # noqa
         return f"version {humantyper.__version__}, frozen={getattr(sys, 'frozen', False)}"
 
     def uia():

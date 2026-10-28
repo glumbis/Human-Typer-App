@@ -69,7 +69,12 @@ class HumanTiming:
         return self.rng.uniform(0.06, 0.13)
 
     def arrow_delay(self) -> float:
-        return self.rng.uniform(0.03, 0.08)
+        """Navigation key (arrow / word jump): like a rapidly tapped or held key,
+        ~25-55 ms with an occasional slightly longer hiccup."""
+        d = self.rng.uniform(0.025, 0.055)
+        if self.rng.random() < 0.06:
+            d += self.rng.uniform(0.02, 0.05)
+        return d
 
     def typo_reaction(self) -> float:
         return 0.35 * self.rng.uniform(0.8, 1.3)

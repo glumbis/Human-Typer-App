@@ -8,6 +8,9 @@ DEFAULTS = {
     "revise_mode": "random",   # "random" | "end"
     "locate_mode": "auto",     # "auto" | "clipboard" | "count"
     "always_on_top": False,
+    "overlay": True,           # always-on-top mini stats window
+    "overlay_x": None,
+    "overlay_y": None,
     "last_text": "",
 }
 

@@ -46,6 +46,13 @@ F8 and F9 are swallowed system-wide while the app runs, so the target app never 
 not used. The GUI also has Start (3-second countdown so you can click into the target), Pause/Resume and Stop buttons.
 Starting with F8 waits ~0.25 s so the key is released first.
 
+### Stats overlay
+
+A small always-on-top window (draggable by its title strip, remembers its position) shows state, progress, live
+WPM, elapsed/ETA, typed chars, typos fixed and revisions, with START / PAUSE / STOP buttons, `[⌂]` (bring the main
+window to front) and `[x]` (hide). It never takes keyboard focus, so its START begins after ~0.3 s with no
+countdown. Turn it off or on with command `8) OVERLAY` in the main window (saved in settings).
+
 ## Revisions: `[first][revised]`
 
 Two bracket groups with nothing between `]` and `[`. The first pass types `first` and skips `revised`. Later the typer
@@ -66,18 +73,22 @@ so the location is verified in layers (setting **Locate mode**, default `auto`):
 
 1. **UI Automation (exact)**: reads the focused control's text and caret through Windows UI Automation and places the
    caret directly after `first` (no key counting). Works in Notepad, Word, most native/WPF/Chromium text fields.
-2. **Clipboard verified**: selects everything before the caret (Ctrl+Shift+Home), copies it, finds `first` in the real
-   text (closest to where it should be; the surrounding text breaks ties between duplicates), walks back with Left, then
-   selects `first` and copies it again to check it matches. Nothing is deleted unless that check passes. **Use this for
-   Google Docs** (canvas, no UI Automation text). Your clipboard is saved first and restored afterwards (all
-   memory-backed formats such as text, HTML, files and images; only GDI-handle formats are not kept).
+2. **Clipboard verified**: no round trip to the start of the document. From the caret (end of the typed text) it
+   extends a selection backwards with Ctrl+Shift+Left word jumps, only as far as `first` should be plus a small margin,
+   and copies it. It finds `first` in that text (closest to where it should be; surrounding text breaks ties between
+   duplicates). If the text drifted beyond the margin it keeps extending the same selection (and finally Ctrl+Shift+Home)
+   and copies again. Then one Left collapses the selection to its start and a short run of Right presses lands just
+   after `first`. On the first revision of a run (and whenever `first` occurs twice in the copied text) it also selects
+   `first` once more and copies it to confirm the caret really is there; nothing is deleted unless that check passes.
+   **Use this for Google Docs** (canvas, no UI Automation text). Your clipboard is saved first and restored afterwards
+   (all memory-backed formats such as text, HTML, files and images; only GDI-handle formats are not kept).
 3. **Counting** (last resort in `auto`, or mode `count`): the old Left-N-times method; unverified. It is logged as
    `count (unverified)` when used.
 
 Mode `clipboard` never falls back to counting: if the location cannot be verified the revision is skipped (the original
 `first` text stays). Empty `first` (`[][text]`) is located by the 16 characters typed before it.
 After the new text is typed the caret goes back to where typing left off (UI Automation: set directly; clipboard: Right
-arrow N times over the unchanged text).
+arrow N times over the unchanged text, tapped quickly at about 25-55 ms per key).
 
 Rules: a lone `[x]` (not directly followed by `[...]`) is typed literally with brackets. `\[` and `\]` give literal
 brackets (also inside groups). **No nesting**: the first unescaped `]` closes a group. Newlines may appear inside groups

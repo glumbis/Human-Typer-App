@@ -3,22 +3,31 @@ import os
 import sys
 import tkinter.font as tkfont
 
-BG = "#061214"
-BG2 = "#0c2427"
-LINE = "#1e6b5f"        # panel borders
-DIM = "#4f8a7e"         # secondary text
-TEXT = "#b6f5c8"        # body text
-GREEN = "#3dff82"
-AMBER = "#ffb13b"
-RED = "#ff5a52"
-CYAN = "#4de3ff"
-WHITE = "#f4f4f4"
+# deep-space galaxy palette
+BG = "#07051a"          # near-black indigo
+BG2 = "#0d0a26"         # panels / active toggle background
+BG3 = "#161040"         # slider troughs, subtle fills
+LINE = "#3b2c80"        # panel borders (dim violet)
+DIM = "#8279b8"         # secondary text
+TEXT = "#d9d6ff"        # body text (pale lavender)
+ICE = "#bfe6ff"         # ice-blue highlight
+VIOLET = "#9b5cff"
+LAVENDER = "#b794ff"    # violet that stays readable as small text
+BLUE = "#4d7cff"
+CYAN = "#5ce1ff"
+PINK = "#ff5cc8"
+ERR = "#ff6b8b"
+WHITE = "#f2f0ff"
 BLACK = "#000000"
+# legacy aliases (widgets / app use semantic names below)
+ACCENT = CYAN           # primary accent: ok / active / typing
+WARN = PINK             # armed / paused / typos
+INPUT_BG = "#050314"
 
-# lolcat-ish stops: green -> yellow -> orange -> red
-STOPS = [(70, 245, 90), (235, 240, 60), (255, 150, 40), (255, 70, 60)]
+# nebula stops: violet -> blue -> cyan -> magenta
+STOPS = [(155, 92, 255), (77, 124, 255), (92, 225, 255), (255, 92, 200)]
 
-FONT_CANDIDATES = ("Cascadia Mono", "Consolas", "Lucida Console", "Courier New")
+FONT_CANDIDATES = ("Consolas", "Cascadia Mono", "Lucida Console", "Courier New")
 _fonts = {}
 _family = None
 
@@ -62,3 +71,23 @@ def ascii_bar(value, lo, hi, width=12) -> str:
     frac = 0.0 if hi == lo else (float(value) - lo) / (hi - lo)
     n = max(0, min(width, int(round(frac * width))))
     return "[" + "█" * n + "░" * (width - n) + "]"
+
+
+def rgb(h: str):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def hexc(c) -> str:
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(v))) for v in c)
+
+
+def mix(a: str, b: str, t: float) -> str:
+    """Blend hex colour a->b by t (0..1)."""
+    return hexc(lerp(rgb(a), rgb(b), t))
+
+
+def unmeasured_ok(root, fnt, chars):
+    """Subset of `chars` whose rendered width equals the font's cell width (safe in monospace grids)."""
+    w = fnt.measure("M")
+    return [c for c in chars if fnt.measure(c) == w]

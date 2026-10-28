@@ -51,6 +51,12 @@ class PynputBackend:
     def select_to_start(self) -> None:
         self._combo([self._Key.ctrl, self._Key.shift], self._Key.home)
 
+    def ctrl_left(self) -> None:
+        self._combo([self._Key.ctrl], self._Key.left)
+
+    def ctrl_shift_left(self) -> None:
+        self._combo([self._Key.ctrl, self._Key.shift], self._Key.left)
+
     def copy(self) -> None:
         self._combo([self._Key.ctrl], "c")
 
@@ -128,7 +134,8 @@ class FakeBackend:
 
     def __init__(self, initial: str = "", key_latency: float = 0.0, autocorrect=None,
                  crlf_clipboard: bool = False, clipboard_works: bool = True,
-                 locator_available: Optional[bool] = None, clipboard_initial: str = ""):
+                 locator_available: Optional[bool] = None, clipboard_initial: str = "",
+                 word_style: str = "win", word_jump: bool = True):
         self.buf: List[str] = list(initial)
         self.cursor = len(self.buf)
         self.sel: Optional[int] = None          # selection anchor (cursor is the active end)
@@ -141,6 +148,8 @@ class FakeBackend:
         self.clipboard = clipboard_initial
         self.clip_seq = 1
         self.clip_restored = 0
+        self.word_style = word_style            # "win" | "chrome" | "word" (Ctrl+Left semantics)
+        self.word_jump = word_jump              # False: Ctrl+(Shift+)Left does nothing
         self.locator = FakeLocator(self, available=locator_available) if locator_available is not None else None
 
     @property
@@ -225,6 +234,47 @@ class FakeBackend:
         if self.sel is None:
             self.sel = self.cursor
         self.cursor = 0
+
+    def _prev_word(self) -> int:
+        """Caret position after Ctrl+Left, per word_style."""
+        buf, p = self.buf, self.cursor
+        if self.word_style == "chrome":      # whitespace-delimited tokens (punctuation sticks to words)
+            while p > 0 and buf[p - 1].isspace():
+                p -= 1
+            while p > 0 and not buf[p - 1].isspace():
+                p -= 1
+            return p
+        if self.word_style == "word":        # punctuation runs are words of their own
+            while p > 0 and buf[p - 1].isspace():
+                p -= 1
+            if p > 0 and not (buf[p - 1].isalnum() or buf[p - 1] in "_'"):
+                while p > 0 and not (buf[p - 1].isalnum() or buf[p - 1] in "_'")                         and not buf[p - 1].isspace():
+                    p -= 1
+            else:
+                while p > 0 and (buf[p - 1].isalnum() or buf[p - 1] in "_'"):
+                    p -= 1
+            return p
+        isw = lambda c: c.isalnum() or c in "_'"      # Windows edit control
+        while p > 0 and not isw(buf[p - 1]):
+            p -= 1
+        while p > 0 and isw(buf[p - 1]):
+            p -= 1
+        return p
+
+    def ctrl_left(self) -> None:
+        self._tick()
+        if not self.word_jump:
+            return
+        self.sel = None                          # jumps from the active end, drops the selection
+        self.cursor = self._prev_word()
+
+    def ctrl_shift_left(self) -> None:
+        self._tick()
+        if not self.word_jump:
+            return
+        if self.sel is None:
+            self.sel = self.cursor
+        self.cursor = self._prev_word()
 
     def copy(self) -> None:
         self._tick()
