@@ -235,7 +235,7 @@ def test_build_cmd():
     e, _ = make_engine(None)
     cmd = e.build_cmd("C:/m.gguf", 1234, 99)
     assert cmd[0].endswith("llama-server.exe")
-    for a, b in [("--host", "127.0.0.1"), ("--port", "1234"), ("-m", "C:/m.gguf"), ("-c", "4096"), ("-ngl", "99")]:
+    for a, b in [("--host", "127.0.0.1"), ("--port", "1234"), ("-m", "C:/m.gguf"), ("-c", "12288"), ("-ngl", "99")]:
         assert cmd[cmd.index(a) + 1] == b
     assert "--jinja" in cmd
 
@@ -356,7 +356,7 @@ def test_prompt_builder():
     m = prompts.build_messages("about cats", 120, "norsk", "formal", "gemma")
     assert m[0]["role"] == "system" and "120 words" in m[0]["content"] and "Norwegian" in m[0]["content"]
     assert m[1]["content"] == "about cats"
-    assert 96 <= prompts.max_tokens_for(50) < prompts.max_tokens_for(800) <= 3000
+    assert 96 <= prompts.max_tokens_for(50) < prompts.max_tokens_for(800) <= 10000
 
 
 # ---- [draft][final] revision pairs ------------------------------------------
@@ -387,3 +387,27 @@ def test_clean_draft_rejects_bad_answers():
     assert P.clean_draft("", orig) is None
     assert P.clean_draft("Draft: Cooking is good for students to learn.", orig) == "Cooking is good for students to learn."
     assert P.clean_draft("ok", orig) is None
+
+
+def test_fallback_draft_cuts_at_a_joint():
+    import random
+    orig = "Cooking teaches you about nutrition and how different ingredients work together."
+    d = P.fallback_draft(orig, random.Random(0))
+    assert d and d.endswith(".") and orig.startswith(d[:-1]) and len(d) < len(orig)
+    assert P.fallback_draft("Too short to cut.") is None
+
+
+def test_pick_spans_uses_clauses_when_more_revisions_than_sentences():
+    import random
+    text = ("Cooking is useful for students, it saves money every week, and it builds real confidence. "
+            "Sharing meals with friends is fun, and it brings people closer together.")
+    assert len(P.sentence_spans(text)) == 2
+    spans = P.pick_spans(text, 5, random.Random(2))
+    assert len(spans) > 2
+    assert all(text[a:b].strip() and "[" not in text[a:b] for a, b in spans)
+    marked = P.apply_revisions(text, [(a, b, "x " + text[a:b].split()[0]) for a, b in spans])
+    from humantyper.backends import FakeBackend
+    from humantyper.engine import Settings, TypingEngine
+    be = FakeBackend()
+    TypingEngine(be, Settings(typo_rate=0.0, seed=1, locate_mode="count"), sleep=lambda s: None).run(marked)
+    assert be.text == text

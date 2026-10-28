@@ -44,7 +44,7 @@ def build_messages(prompt: str, words: int, language: str = "auto", tone: str = 
 
 
 def max_tokens_for(words: int) -> int:
-    return max(96, min(3000, int(words * 2.6) + 64))
+    return max(96, min(10000, int(words * 2.6) + 64))
 
 
 # ---- [first][revised] pairs ------------------------------------------------
@@ -55,7 +55,7 @@ def max_tokens_for(words: int) -> int:
 import random
 import re
 
-REVISION_COUNTS = ("0", "1", "2", "3", "5", "8")
+REVISION_COUNTS = ("0", "1", "3", "5", "8")
 _SENT = re.compile(r"[^.!?\n]+[.!?]+[\"')]*")
 
 
@@ -76,10 +76,46 @@ def sentence_spans(text: str):
     return spans
 
 
+def clause_spans(text: str):
+    """Finer candidates for when more revisions are wanted than there are sentences: sentences
+    split at commas/semicolons into parts of 4+ words."""
+    out = []
+    for a, b in sentence_spans(text):
+        start = a
+        for m in re.finditer(r"[,;:] ", text[a:b]):
+            end = a + m.start() + 1
+            if len(text[start:end].split()) >= 4:
+                out.append((start, end))
+            start = a + m.end()
+        if len(text[start:b].split()) >= 4:
+            out.append((start, b))
+    return out
+
+
+def chunk_spans(spans, text: str, size: int = 5):
+    """Finest candidates: each span cut into runs of `size` words (the tail joins the last run)."""
+    out = []
+    for a, b in spans:
+        words = list(re.finditer(r"\S+", text[a:b]))
+        if len(words) < 2 * 4:
+            out.append((a, b))
+            continue
+        k = max(1, len(words) // size)
+        bounds = [round(i * len(words) / k) for i in range(k + 1)]
+        for i in range(k):
+            out.append((a + words[bounds[i]].start(), a + words[bounds[i + 1] - 1].end()))
+    return out
+
+
 def pick_spans(text: str, n: int, rng=None):
-    """Up to n sentence spans, spread through the text, in document order."""
+    """Up to n sentence spans (clause spans if n exceeds the sentences), spread through the text,
+    in document order."""
     rng = rng or random.Random()
     spans = sentence_spans(text)
+    if n > len(spans):
+        spans = max(spans, clause_spans(text), key=len)
+    if n > len(spans):
+        spans = max(spans, chunk_spans(spans, text), key=len)
     if n <= 0 or not spans:
         return []
     if n >= len(spans):
@@ -120,6 +156,26 @@ def clean_draft(draft: str, original: str):
     if not 0.4 <= ratio <= 1.8:
         return None
     return d
+
+
+_CUT_WORDS = {"and", "but", "because", "which", "while", "so", "that", "with", "when", "since",
+              "og", "men", "fordi", "som", "mens", "så", "med", "når", "siden"}
+
+
+def fallback_draft(original: str, rng=None):
+    """Model-free draft: the sentence cut short at a natural joint (comma or a word like 'and'),
+    so the later revision 'adds the rest'. None if the sentence is too short to cut."""
+    rng = rng or random.Random()
+    s = original.strip()
+    words = s.split()
+    if len(words) < 6:
+        return None
+    end_punct = s[-1] if s[-1] in ".!?" else ""          # mid-sentence chunks stay unpunctuated
+    cuts = [i for i in range(3, len(words) - 2)
+            if words[i - 1].endswith(",") or words[i].lower().strip(",;") in _CUT_WORDS]
+    i = rng.choice(cuts) if cuts else max(3, int(len(words) * rng.uniform(0.55, 0.7)))
+    d = " ".join(words[:i]).rstrip(",;:") + end_punct
+    return clean_draft(d, s)
 
 
 def apply_revisions(text: str, pairs) -> str:

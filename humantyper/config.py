@@ -9,6 +9,7 @@ DEFAULTS = {
     "locate_mode": "auto",     # "auto" | "clipboard" | "count"
     "always_on_top": False,
     "overlay": True,           # always-on-top mini stats window
+    "animation": True,         # animated ASCII galaxy / banner / face
     "overlay_x": None,
     "overlay_y": None,
     "last_text": "",

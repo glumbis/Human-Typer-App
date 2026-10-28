@@ -263,7 +263,7 @@ class LocalEngine:
     # -- command line --
     def build_cmd(self, model_path: str, port: int, ngl: int) -> List[str]:
         return [self.exe, "--host", "127.0.0.1", "--port", str(port), "-m", model_path,
-                "-c", "4096", "--jinja", "-ngl", str(ngl), "--no-webui"]
+                "-c", "12288", "--jinja", "-ngl", str(ngl), "--no-webui"]
 
     # -- start / stop --
     def ensure_started(self, model_path: str) -> str:

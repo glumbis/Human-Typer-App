@@ -73,3 +73,21 @@ def raise_topmost(widget) -> None:
 def foreground_hwnd() -> int:
     u = _user32()
     return int(u.GetForegroundWindow() or 0) if u else 0
+
+
+def fit_to_workarea(win, w, h, min_w, min_h, scaling=1.0, x_frac=0.5):
+    """Size a (customtkinter) window to at most w x h logical px so it sits fully inside the
+    monitor work area (small, high-DPI laptop screens cut the bottom off otherwise)."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+    r = wintypes.RECT()
+    if not ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+        return
+    s = scaling or 1.0
+    wx, wy = r.left / s, r.top / s
+    ww, wh = (r.right - r.left) / s, (r.bottom - r.top) / s
+    w, h = min(w, int(ww) - 16), min(h, int(wh) - 40)            # 40 = title bar + frame
+    win.minsize(min(min_w, w), min(min_h, h))
+    win.geometry(f"{w}x{h}+{int(wx + (ww - w) * x_frac)}+{int(wy)}")

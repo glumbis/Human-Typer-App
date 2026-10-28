@@ -104,7 +104,9 @@ class Toggle(tk.Frame):
         return self.value
 
     def set(self, value, fire=False):
-        if value not in self.labels:
+        if value not in self.labels:          # e.g. a custom number typed elsewhere: no preset lit
+            self.value = None
+            self._refresh()
             return
         changed = value != self.value
         self.value = value

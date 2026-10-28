@@ -15,9 +15,11 @@ from .parser import parse
 from .ui import art
 from .ui import theme as T
 from .ui.background import PROBE_CHARS, GalaxyBackground
-from .ui.widgets import (AsciiView, CanvasArt, GBox, GButton, GLabel, GToggle, GWindow, Panel)
+from .ui.widgets import (AsciiView, CanvasArt, GBox, GButton, GLabel, GToggle, GWindow, Panel,
+                         TextButton)
 from .ui.overlay import StatsOverlay
 from .ui.stats import Stats
+from .ui.winutil import fit_to_workarea
 
 READY = "READY — click into any app and press F8"
 MODES = {"RANDOM": "random", "END": "end"}
@@ -91,21 +93,10 @@ class HumanTyperApp(ctk.CTk):
         self.after(250, self._kick_anim)
 
     def _fit_to_screen(self):
-        """Open fully inside the monitor's work area (small/high-DPI laptop screens cut the bottom
-        rows - status, START, AI WRITE - off otherwise)."""
         try:
-            import ctypes
-            from ctypes import wintypes
-            r = wintypes.RECT()
-            ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0)   # SPI_GETWORKAREA
-            s = ctk.ScalingTracker.get_window_scaling(self) or 1.0
-            wx, wy = r.left / s, r.top / s
-            ww, wh = (r.right - r.left) / s, (r.bottom - r.top) / s
+            fit_to_workarea(self, 800, 700, 760, 560, ctk.ScalingTracker.get_window_scaling(self))
         except Exception:
-            return
-        w, h = min(800, int(ww) - 16), min(700, int(wh) - 40)       # 40 = title bar + frame
-        self.minsize(min(760, w), min(560, h))
-        self.geometry(f"{w}x{h}+{int(wx + (ww - w) / 2)}+{int(wy)}")
+            pass
 
     def _set_icon(self):
         path = T.resource_path(os.path.join("assets", "icon.ico"))
@@ -153,11 +144,28 @@ class HumanTyperApp(ctk.CTk):
                                         selectbackground=T.VIOLET, selectforeground=T.WHITE)
         if self.cfg.get("last_text"):
             self.textbox.insert("1.0", self.cfg["last_text"])
+        # AI WRITE right on the paste box (title line) and a hint inside it while it is empty
+        ai_tb = TextButton(inp, "[ ✦ AI WRITE ]", self._open_ai, fnt=T.font(10, True), color=T.PINK)
+        ai_tb.default_bg = T.PANEL
+        ai_tb.configure(bg=T.PANEL)
+        ai_tb.place(relx=1.0, x=-14, y=-2, anchor="ne")
+        hint = self._hint = tk.Frame(self.textbox, bg=T.INPUT_BG)
+        for txt, col in (("paste or type the text to be typed here", T.DIM), ("— or —", T.LINE)):
+            lb = tk.Label(hint, text=txt, font=T.font(10), fg=col, bg=T.INPUT_BG)
+            lb.pack(pady=3)
+            lb.bind("<Button-1>", lambda e: self.textbox.focus_set())
+        hb = TextButton(hint, "[ ✦ AI WRITE ]  let a local AI write it", self._open_ai,
+                        fnt=T.font(11, True), color=T.PINK)
+        hb.default_bg = T.INPUT_BG
+        hb.configure(bg=T.INPUT_BG)
+        hb.pack(pady=3)
+        hint.bind("<Button-1>", lambda e: self.textbox.focus_set())
+        self._hint_shown = False
 
         # command menu: ghost widgets on the galaxy ------------------------
         self._row_h = 24
         self._menu_top = f9.metrics("linespace") + 12
-        self.rowconfigure(2, minsize=8 + self._menu_top + 8 * self._row_h + 10)
+        self.rowconfigure(2, minsize=8 + self._menu_top + 9 * self._row_h + 10)
         self.menu_box = GBox(cv, "COMMAND MENU", f9)
         self._menu_items = []          # (ghost, col_x, row)
         lab_w = f10.measure("M") * 22
@@ -170,6 +178,7 @@ class HumanTyperApp(ctk.CTk):
         self.paste_btn = add(GButton(cv, "[ PASTE ]", self._paste), f10.measure("M") * 3, 0)
         add(GLabel(cv, "2)", f10, T.DIM), f10.measure("M") * 15, 0)
         self.clear_btn = add(GButton(cv, "[ CLEAR ]", self._clear), f10.measure("M") * 18, 0)
+        add(GButton(cv, "[ ✦ AI WRITE ]", self._open_ai, color=T.PINK), f10.measure("M") * 30, 0)
 
         self.wpm_var = ctk.DoubleVar(value=float(self.cfg["wpm"]))
         self.typo_var = ctk.DoubleVar(value=float(self.cfg["typo_rate"]))
@@ -192,8 +201,12 @@ class HumanTyperApp(ctk.CTk):
                                    command=lambda v: self._set_overlay(v == "yes"))
         self._menu_row(add, 6, "8) OVERLAY", self.overlay_btn, lab_w)
 
-        self.ai_btn = GButton(cv, "[ OPEN ]", self._open_ai)
+        self.ai_btn = GButton(cv, "[ OPEN ]", self._open_ai, color=T.PINK)
         self._menu_row(add, 7, "9) AI WRITE", self.ai_btn, lab_w)
+
+        self.anim_btn = GToggle(cv, ["on", "off"], "on" if self.cfg.get("animation", True) else "off",
+                                command=lambda v: self._set_animation(v == "on"))
+        self._menu_row(add, 8, "10) ANIMATION", self.anim_btn, lab_w)
 
         # right column: face + log drawn straight on the galaxy ------------
         f6, f8 = T.font(6), T.font(8)
@@ -467,11 +480,18 @@ class HumanTyperApp(ctk.CTk):
         if e.widget is self:
             self._minimized = False
 
+    def _set_animation(self, on):
+        """ANIMATION off freezes the galaxy, banner and face on their current frame (no CPU)."""
+        self.anim_btn.set("on" if on else "off")
+        self._save_cfg()
+
     def _anim(self):
         self._anim_id = None
         typing = self._animating()
         delay = 400
-        if self._visible() and not self._minimized:
+        if self.anim_btn.get() == "off" and self._phase > 0:
+            pass                                   # frozen; keep polling cheaply for the toggle
+        elif self._visible() and not self._minimized:
             self._phase += 1
             self._hue = (self._hue + (0.01 if typing else 0.004)) % 2.0
             self.bg.step(typing)
@@ -738,7 +758,18 @@ class HumanTyperApp(ctk.CTk):
             pass
         self._refresh_stream()
         self._sync_overlay()
+        self._update_hint()
         self.after(40 if self.st != "idle" else 100, self._poll)
+
+    def _update_hint(self):
+        """Show the 'paste here / AI WRITE' hint only while the paste box is empty."""
+        empty = self.textbox._textbox.compare("end-1c", "==", "1.0")
+        if empty != self._hint_shown:
+            self._hint_shown = empty
+            if empty:
+                self._hint.place(relx=0.5, rely=0.45, anchor="center")
+            else:
+                self._hint.place_forget()
 
     def _handle(self, kind, val):
         if kind != "char":
@@ -805,6 +836,7 @@ class HumanTyperApp(ctk.CTk):
                 "locate_mode": self.locate_btn.get(),
                 "always_on_top": self.top_btn.get() == "yes",
                 "overlay": self.overlay_btn.get() == "yes",
+                "animation": self.anim_btn.get() == "on",
                 "last_text": self._text(),
             }
             if self.overlay is not None:

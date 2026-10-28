@@ -8,6 +8,8 @@ from typing import Callable, Dict, Optional
 
 import customtkinter as ctk
 
+from .winutil import fit_to_workarea
+
 from ..ai import engine as eng
 from ..ai import models as mdl
 from ..ai import prompts
@@ -58,7 +60,11 @@ class AiWindow(ctk.CTkToplevel):
         self.title("Human Typer - AI WRITE")
         self.configure(bg=T.BG)
         self.geometry("700x700")
-        self.minsize(600, 560)
+        self.minsize(600, 480)
+        try:                                   # keep USE -> PASTE BOX on screen on small laptops
+            fit_to_workarea(self, 700, 700, 600, 480, ctk.ScalingTracker.get_window_scaling(self), 0.7)
+        except Exception:
+            pass
         self._set_icon()
         self._build()
         self._refresh_models()
@@ -131,15 +137,18 @@ class AiWindow(ctk.CTkToplevel):
         opts.pack(fill="x", pady=(8, 0))
         opts.columnconfigure(1, weight=1)
         tk.Label(opts, text="LENGTH", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=0, column=0, sticky="w")
-        self.len_var = tk.DoubleVar(value=float(self.cfg.get("length", 250)))
+        length = int(self.cfg.get("length", 250))
+        self.len_var = tk.DoubleVar(value=float(min(800, max(50, length))))
         ctk.CTkSlider(opts, from_=50, to=800, number_of_steps=75, variable=self.len_var,
                       command=lambda v: self._len_text(), height=14, corner_radius=0, button_corner_radius=0,
                       button_length=6, fg_color=T.BG3, progress_color=T.VIOLET, button_color=T.CYAN,
                       button_hover_color=T.PINK, bg_color=T.BG, border_width=0
                       ).grid(row=0, column=1, sticky="we", padx=(0, 10), pady=3)
-        self.len_lbl = tk.Label(opts, font=f10, fg=T.ACCENT, bg=T.BG, anchor="w", width=11)
-        self.len_lbl.grid(row=0, column=2, sticky="w")
-        self._len_text()
+        lf = tk.Frame(opts, bg=T.BG)
+        lf.grid(row=0, column=2, sticky="w")
+        self.len_entry = self._num_entry(lf, length)          # any number, the slider is just a shortcut
+        self.len_entry.pack(side="left")
+        tk.Label(lf, text=" words", font=f10, fg=T.DIM, bg=T.BG).pack(side="left")
         tk.Label(opts, text="LANGUAGE", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=1, column=0, sticky="w", pady=2)
         lang = self.cfg.get("language", "auto")
         self.lang_btn = Toggle(opts, list(prompts.LANGUAGES), lang if lang in prompts.LANGUAGES else "auto")
@@ -150,9 +159,15 @@ class AiWindow(ctk.CTkToplevel):
         self.tone_btn.grid(row=2, column=1, sticky="w", pady=2)
         tk.Label(opts, text="REVISIONS", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=3, column=0, sticky="w", pady=2)
         revs = str(self.cfg.get("revisions", "3"))
-        self.rev_btn = Toggle(opts, list(prompts.REVISION_COUNTS), revs if revs in prompts.REVISION_COUNTS else "3")
+        self.rev_btn = Toggle(opts, list(prompts.REVISION_COUNTS), revs if revs in prompts.REVISION_COUNTS else "",
+                              command=lambda v: self._set_entry(self.rev_entry, v))
         self.rev_btn.grid(row=3, column=1, sticky="w", pady=2)
-        tk.Label(opts, text="[draft][final] pairs", font=T.font(8), fg=T.DIM, bg=T.BG).grid(row=3, column=2, sticky="w")
+        rf = tk.Frame(opts, bg=T.BG)
+        rf.grid(row=3, column=2, sticky="w")
+        self.rev_entry = self._num_entry(rf, revs)            # custom count; presets just fill it in
+        self.rev_entry.pack(side="left")
+        tk.Label(rf, text=" pairs", font=f10, fg=T.DIM, bg=T.BG).pack(side="left")
+        self.rev_entry.bind("<KeyRelease>", lambda e: self.rev_btn.set(self.rev_entry.get().strip()))
 
         bar = tk.Frame(self, bg=T.BG)
         bar.pack(fill="x", padx=14, pady=(8, 0))
@@ -189,11 +204,33 @@ class AiWindow(ctk.CTkToplevel):
         self.count_lbl = tk.Label(bot, text="", font=f9, fg=T.DIM, bg=T.BG)
         self.count_lbl.pack(side="right")
 
+    def _num_entry(self, master, value):
+        e = tk.Entry(master, width=6, font=T.font(10, True), bg=T.INPUT_BG, fg=T.ACCENT, relief="flat",
+                     insertbackground=T.CYAN, highlightthickness=1, highlightbackground=T.LINE,
+                     highlightcolor=T.CYAN, justify="right")
+        e.insert(0, str(value))
+        return e
+
+    @staticmethod
+    def _set_entry(entry, value):
+        entry.delete(0, "end")
+        entry.insert(0, str(value))
+
+    @staticmethod
+    def _entry_int(entry, default, lo, hi):
+        try:
+            return max(lo, min(hi, int(float(entry.get().strip()))))
+        except ValueError:
+            return default
+
     def _len_text(self):
-        self.len_lbl.configure(text=f"{int(round(self.len_var.get() / 10) * 10)} words")
+        self._set_entry(self.len_entry, int(round(self.len_var.get() / 10) * 10))
 
     def _words(self) -> int:
-        return int(round(self.len_var.get() / 10) * 10)
+        return self._entry_int(self.len_entry, int(round(self.len_var.get() / 10) * 10), 10, 3000)
+
+    def _revisions(self) -> int:
+        return self._entry_int(self.rev_entry, 3, 0, 200)
 
     # ---- model list ------------------------------------------------------
     def _refresh_models(self):
@@ -361,6 +398,8 @@ class AiWindow(ctk.CTkToplevel):
         self.busy = busy
         self.gen_btn.set_enabled(not busy)
         self.stop_btn.set_enabled(busy)
+        self.use_btn.set_enabled(not busy)          # text isn't final until the revision pairs are in
+        self.copy_btn.set_enabled(not busy)
         self.model_menu.configure(state="disabled" if busy else "normal")
 
     def _generate(self):
@@ -383,14 +422,14 @@ class AiWindow(ctk.CTkToplevel):
         msgs = prompts.build_messages(prompt, words, self.lang_btn.get(), self.tone_btn.get(),
                                       self._selected_name())
         self.cfg.update(length=words, language=self.lang_btn.get(), tone=self.tone_btn.get(), model=path,
-                        revisions=self.rev_btn.get())
+                        revisions=str(self._revisions()))
         self._save_cfg()
         self.out.delete("1.0", "end")
         self.last_tps = 0.0
         self._set_busy(True)
         self._info("working...", T.DIM)
         self._cancelled = False
-        job = (int(self.rev_btn.get()), self.lang_btn.get(), self._selected_name())
+        job = (self._revisions(), self.lang_btn.get(), self._selected_name())
         threading.Thread(target=self._worker, args=(path, msgs, words, job), daemon=True).start()
 
     def _worker(self, path, msgs, words, job=(0, "auto", "")):
@@ -424,13 +463,20 @@ class AiWindow(ctk.CTkToplevel):
         for i, (a, b) in enumerate(spans, 1):
             if self._cancelled:
                 return
-            q.put(("info", f"adding revisions {i}/{len(spans)}..."))
+            q.put(("info", f"adding revisions {i}/{len(spans)}... (please wait, USE unlocks when done)"))
             original = text[a:b]
-            raw = "".join(self.engine.generate(prompts.draft_messages(original, lang, name),
-                                               prompts.max_tokens_for(len(original.split()) + 10)))
-            draft = prompts.clean_draft(raw, original)
+            draft = None
+            for temp in (0.8, 1.0):                      # model draft, one retry, then a built-in cut
+                raw = "".join(self.engine.generate(prompts.draft_messages(original, lang, name),
+                                                   prompts.max_tokens_for(len(original.split()) + 10),
+                                                   temperature=temp))
+                draft = prompts.clean_draft(raw, original)
+                if draft or self._cancelled:
+                    break
+            draft = draft or prompts.fallback_draft(original)
             if draft:
                 pairs.append((a, b, draft))
+        self._revs_wanted = nrev
         if pairs and not self._cancelled:
             q.put(("replace", prompts.apply_revisions(text, pairs), len(pairs)))
 
@@ -489,8 +535,11 @@ class AiWindow(ctk.CTkToplevel):
         else:
             text = self.out.get("1.0", "end").strip()
             k = getattr(self, "_revs_added", 0)
-            self._revs_added = 0
+            want = getattr(self, "_revs_wanted", 0)
+            self._revs_added = self._revs_wanted = 0
             extra = f" with {k} [draft][final] revision{'s' if k != 1 else ''}" if k else ""
+            if want and k < want:
+                extra += f" (asked for {want}; the text only had {k} sentence parts to revise)"
             self._info(f"done - {len(text.split())} words{extra}. Edit if you like, then USE -> PASTE BOX.", T.ACCENT)
         self._paint_status()
         self._update_count()
