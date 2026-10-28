@@ -6,6 +6,7 @@ import tkinter.font as tkfont
 # deep-space galaxy palette
 BG = "#07051a"          # near-black indigo
 BG2 = "#0d0a26"         # panels / active toggle background
+PANEL = "#0a0822"       # opaque panels (input / log / face) over the galaxy
 BG3 = "#161040"         # slider troughs, subtle fills
 LINE = "#3b2c80"        # panel borders (dim violet)
 DIM = "#8279b8"         # secondary text

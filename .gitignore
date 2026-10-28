@@ -7,3 +7,4 @@ build/
 dist/
 !packaging/*.spec
 *.egg-info/
+packaging/vendor/

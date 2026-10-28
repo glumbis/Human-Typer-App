@@ -7,14 +7,15 @@ from . import theme as T
 class Panel(tk.Frame):
     """Frame with a thin box border and a [ TITLE ] set into the top edge."""
 
-    def __init__(self, master, title, fnt=None, color=None, **kw):
-        super().__init__(master, bg=T.BG, **kw)
+    def __init__(self, master, title, fnt=None, color=None, bg=None, **kw):
+        bg = bg or T.BG
+        super().__init__(master, bg=bg, **kw)
         self.fnt = fnt or T.font(9)
         self.title = title
         self.color = color or T.LINE
-        self.canvas = tk.Canvas(self, bg=T.BG, highlightthickness=0, bd=0)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
-        self.body = tk.Frame(self, bg=T.BG)
+        self.body = tk.Frame(self, bg=bg)
         ls = self.fnt.metrics("linespace")
         self.body.pack(fill="both", expand=True, padx=(10, 10), pady=(ls + 6, 9))
         self.canvas.bind("<Configure>", self._draw)
@@ -185,3 +186,212 @@ class AsciiCanvas(tk.Canvas):
                     if run.strip():
                         self.create_text(ci * cw, y, text=run, anchor="nw", font=fnt, fill=cols[tag])
                 ci = cj
+
+
+# --------------------------------------------------------------------------- ghost widgets
+# Text widgets drawn as canvas items directly on the galaxy backdrop, so the animation shows through
+# (tk widgets are opaque). They expose the same small API the app uses on the tk versions.
+_gid = [0]
+
+
+class _Ghost:
+    def __init__(self, canvas):
+        _gid[0] += 1
+        self.canvas = canvas
+        self.tag = f"gh{_gid[0]}"
+
+    def bbox(self):
+        return self.canvas.bbox(self.tag)
+
+    def width(self):
+        b = self.bbox()
+        return (b[2] - b[0]) if b else 0
+
+    def moveto(self, x, y):
+        b = self.bbox()
+        if b:
+            self.canvas.move(self.tag, x - b[0], y - b[1])
+
+
+class GLabel(_Ghost):
+    def __init__(self, canvas, text, fnt, fg=None, anchor="nw"):
+        super().__init__(canvas)
+        self.fnt = fnt
+        self.item = canvas.create_text(0, 0, text=text, font=fnt, fill=fg or T.TEXT, anchor=anchor,
+                                       tags=(self.tag,))
+
+    def configure(self, text=None, fg=None, **_):
+        if text is not None:
+            self.canvas.itemconfigure(self.item, text=text)
+        if fg is not None:
+            self.canvas.itemconfigure(self.item, fill=fg)
+
+
+class GButton(GLabel):
+    """[ LABEL ] that inverts on hover (same behaviour as TextButton)."""
+
+    def __init__(self, canvas, text, command, fnt=None, color=T.CYAN):
+        super().__init__(canvas, text, fnt or T.font(10, True), color)
+        self.command, self.color, self.enabled = command, color, True
+        self.rect = canvas.create_rectangle(0, 0, 0, 0, fill="", outline="", tags=(self.tag,))
+        canvas.tag_lower(self.rect, self.item)
+        self._fit()
+        for it in (self.item, self.rect):
+            canvas.tag_bind(it, "<Enter>", lambda e: self._paint(True))
+            canvas.tag_bind(it, "<Leave>", lambda e: self._paint(False))
+            canvas.tag_bind(it, "<ButtonRelease-1>", self._click)
+
+    def _fit(self):
+        b = self.canvas.bbox(self.item)
+        if b:
+            self.canvas.coords(self.rect, b[0] - 2, b[1], b[2] + 2, b[3])
+
+    def configure(self, text=None, **kw):
+        super().configure(text=text, **kw)
+        self._fit()
+
+    def _paint(self, hover):
+        c = self.canvas
+        if not self.enabled:
+            c.itemconfigure(self.item, fill=T.DIM)
+            c.itemconfigure(self.rect, fill="")
+            c.configure(cursor="")
+        elif hover:
+            c.itemconfigure(self.item, fill=T.BG)
+            c.itemconfigure(self.rect, fill=self.color)
+            c.configure(cursor="hand2")
+        else:
+            c.itemconfigure(self.item, fill=self.color)
+            c.itemconfigure(self.rect, fill="")
+            c.configure(cursor="")
+
+    def _click(self, e):
+        if self.enabled:
+            self.command()
+
+    def set_enabled(self, on):
+        self.enabled = bool(on)
+        self._paint(False)
+
+
+class GToggle(_Ghost):
+    """Row of [OPTION] labels on the canvas; the active one is cyan on a dim plate."""
+
+    def __init__(self, canvas, options, value, command=None, fnt=None):
+        super().__init__(canvas)
+        self.fnt = fnt or T.font(10, True)
+        self.command, self.value = command, value
+        self.opts = {}
+        x = 0
+        for opt in options:
+            txt = canvas.create_text(x + 2, 0, text=f"[{opt.upper()}]", font=self.fnt, anchor="nw",
+                                     fill=T.DIM, tags=(self.tag,))
+            b = canvas.bbox(txt)
+            rect = canvas.create_rectangle(b[0] - 2, b[1], b[2] + 2, b[3], fill="", outline="",
+                                           tags=(self.tag,))
+            canvas.tag_lower(rect, txt)
+            self.opts[opt] = (txt, rect)
+            x = b[2] + 10
+            for it in (txt, rect):
+                canvas.tag_bind(it, "<Button-1>", lambda e, o=opt: self.set(o, True))
+                canvas.tag_bind(it, "<Enter>", lambda e, o=opt: self._paint(o, True))
+                canvas.tag_bind(it, "<Leave>", lambda e, o=opt: self._paint(o, False))
+        self._refresh()
+
+    def _paint(self, opt, hover):
+        txt, rect = self.opts[opt]
+        c = self.canvas
+        if opt == self.value:
+            c.itemconfigure(txt, fill=T.CYAN)
+            c.itemconfigure(rect, fill=T.BG3)
+        else:
+            c.itemconfigure(txt, fill=T.PINK if hover else T.DIM)
+            c.itemconfigure(rect, fill="")
+        c.configure(cursor="hand2" if hover else "")
+
+    def _refresh(self):
+        for o in self.opts:
+            self._paint(o, False)
+
+    def get(self):
+        return self.value
+
+    def set(self, value, fire=False):
+        if value not in self.opts:
+            return
+        changed = value != self.value
+        self.value = value
+        self._refresh()
+        if fire and changed and self.command:
+            self.command(value)
+
+
+class GBox(_Ghost):
+    """Panel border with a [ TITLE ] in the top edge, drawn on the backdrop canvas."""
+
+    def __init__(self, canvas, title, fnt, color=None):
+        super().__init__(canvas)
+        self.title, self.fnt, self.color = title, fnt, color or T.LINE
+
+    def draw(self, x0, y0, x1, y1):
+        c = self.canvas
+        c.delete(self.tag)
+        ls = self.fnt.metrics("linespace")
+        y = y0 + ls // 2 + 1
+        txt = f"[ {self.title} ]"
+        tw = self.fnt.measure(txt)
+        t = (self.tag,)
+        c.create_line(x0, y, x0 + 9, y, fill=self.color, tags=t)
+        c.create_line(x0 + 9 + tw + 8, y, x1, y, x1, y1, x0, y1, x0, y, fill=self.color, tags=t)
+        c.create_text(x0 + 13, y, text=txt, anchor="w", font=self.fnt, fill=T.ICE, tags=t)
+        for cx, cy in ((x0, y), (x1, y), (x0, y1), (x1, y1)):
+            c.create_rectangle(cx - 1, cy - 1, cx + 1, cy + 1, fill=self.color, outline=self.color, tags=t)
+
+
+class CanvasArt:
+    """Paints rows of (char, tag) cells onto a shared canvas at (x, y), redrawing only rows that
+    changed. Same pitch squeeze as AsciiCanvas so block glyphs join vertically."""
+
+    def __init__(self, canvas, fnt, x, y, tag_colors, name, rows, squeeze=1):
+        self.canvas, self.fnt, self.x, self.y, self.name = canvas, fnt, x, y, name
+        self.cw = fnt.measure("M")
+        self.pitch = fnt.metrics("linespace") - squeeze
+        self.colors = dict(tag_colors)
+        self.rows = rows
+        self._last = [None] * rows
+
+    def height(self):
+        return self.rows * self.pitch + 1
+
+    def paint(self, grid):
+        c, cw = self.canvas, self.cw
+        for ri, row in enumerate(grid):
+            key = tuple(row)
+            if key == self._last[ri]:
+                continue
+            self._last[ri] = key
+            rtag = f"{self.name}{ri}"
+            c.delete(rtag)
+            y = self.y + ri * self.pitch
+            ci, n = 0, len(row)
+            while ci < n:
+                tag = row[ci][1]
+                cj = ci
+                while cj < n and row[cj][1] == tag:
+                    cj += 1
+                if tag is not None:
+                    run = "".join(ch for ch, _ in row[ci:cj])
+                    if run.strip():
+                        c.create_text(self.x + ci * cw, y, text=run, anchor="nw", font=self.fnt,
+                                      fill=self.colors[tag], tags=(self.name, rtag))
+                ci = cj
+
+
+class GWindow:
+    """A tk widget embedded in the canvas (e.g. a slider); only supports moveto."""
+
+    def __init__(self, canvas, win_item):
+        self.canvas, self.item = canvas, win_item
+
+    def moveto(self, x, y):
+        self.canvas.coords(self.item, x, y)

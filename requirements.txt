@@ -2,3 +2,4 @@ customtkinter>=5.2
 pynput>=1.7
 comtypes>=1.2; sys_platform == "win32"
 pillow>=10.0
+numpy>=1.24

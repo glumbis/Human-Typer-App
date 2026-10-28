@@ -27,7 +27,7 @@ python main.py
 Requires Python 3.10+ and [Inno Setup 6](https://jrsoftware.org/isdl.php) (for the installer). Then, in PowerShell:
 
 ```
-.uild.ps1
+.\build.ps1
 ```
 
 This installs the requirements plus PyInstaller, builds `dist\HumanTyper.exe` (portable, onefile) and
@@ -105,6 +105,24 @@ brackets (also inside groups). **No nesting**: the first unescaped `]` closes a 
 * **Always on top**. Settings and the last text are saved to `%APPDATA%\HumanTyper\settings.json`.
 
 Newline presses Enter; a Tab character presses Tab.
+
+## AI write (local model)
+
+The **AI WRITE** window generates text from a prompt with a model that runs **entirely on this PC** (no cloud, no
+account) and sends the result to the paste box.
+
+* **Engine**: the official [llama.cpp](https://github.com/ggml-org/llama.cpp) `llama-server` (Vulkan build, release
+  `b11910`, SHA256-pinned) is bundled in the installer/exe and bound to `127.0.0.1` only. It tries the GPU first and
+  falls back to CPU automatically (remembered in `%APPDATA%\HumanTyper\ai.json`). It starts on first use, stays loaded
+  between generations, unloads after 10 idle minutes and always dies with the app.
+* **Models** (`.gguf`): picked up automatically from LM Studio (`%USERPROFILE%\.lmstudio\models`,
+  `%USERPROFILE%\.cache\lm-studio\models`) and `%LOCALAPPDATA%\HumanTyper\models`. The model manager can download
+  Gemma 4 E2B, Qwen3 1.7B and Llama 3.2 1B from Hugging Face (resumable, size/SHA256 verified) and delete the ones it
+  downloaded itself (your LM Studio files are never touched). Models are not bundled with the app.
+* **Options**: length (50-800 words), language (auto / English / Norsk), tone (neutral / casual / formal / student).
+  The output is editable; **USE -> PASTE BOX** replaces the paste box, **COPY** copies it.
+* **Running from source**: fetch the engine once with `.\build.ps1 -FetchEngine` (or `python tools/fetch_engine.py`).
+  It is extracted to `packaging/vendor/llama/` (git-ignored). `.\build.ps1` does this automatically.
 
 ## Caveats
 

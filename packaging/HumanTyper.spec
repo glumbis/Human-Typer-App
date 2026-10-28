@@ -26,9 +26,17 @@ version_info = VSVersionInfo(
 import glob
 datas = [(f, "assets") for f in glob.glob(os.path.join(ROOT, "assets", "*")) if os.path.isfile(f)]
 datas += collect_data_files("customtkinter")
+# bundled local-AI engine (llama.cpp llama-server + ggml dlls), fetched by tools/fetch_engine.py. Models are NOT bundled.
+_llama = os.path.join(ROOT, "packaging", "vendor", "llama")
+if not os.path.isfile(os.path.join(_llama, "llama-server.exe")):
+    raise SystemExit("llama engine missing: run `python tools/fetch_engine.py` (or build.ps1) first")
+datas += [(f, "llama") for f in glob.glob(os.path.join(_llama, "*")) if os.path.isfile(f)
+          and not os.path.basename(f).startswith(".")]
 hiddenimports = ["pynput.keyboard._win32", "pynput.mouse._win32", "comtypes", "comtypes.client",
                  "comtypes.automation", "comtypes.typeinfo", "comtypes.stream", "comtypes.persist",
-                 "comtypes.server", "comtypes.gen", "PIL", "PIL.Image", "PIL.ImageTk"]
+                 "comtypes.server", "comtypes.gen", "PIL", "PIL.Image", "PIL.ImageTk",
+                 "humantyper.ai", "humantyper.ai.engine", "humantyper.ai.models", "humantyper.ai.prompts",
+                 "humantyper.ai.settings", "humantyper.ui.ai_window", "http.client", "ctypes.wintypes"]
 hiddenimports += collect_submodules("comtypes.gen")
 icon = os.path.join(ROOT, "assets", "icon.ico")
 
