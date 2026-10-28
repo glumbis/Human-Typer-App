@@ -69,6 +69,7 @@ class HumanTyperApp(ctk.CTk):
         self._minimized = False
 
         self._build()
+        self._fit_to_screen()
         self.attributes("-topmost", bool(self.cfg["always_on_top"]))
         self._build_overlay()
         self._draw_banner()
@@ -88,6 +89,23 @@ class HumanTyperApp(ctk.CTk):
         self.bind("<Unmap>", self._on_unmap, add="+")
         self.bind("<Map>", self._on_map, add="+")
         self.after(250, self._kick_anim)
+
+    def _fit_to_screen(self):
+        """Open fully inside the monitor's work area (small/high-DPI laptop screens cut the bottom
+        rows - status, START, AI WRITE - off otherwise)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            r = wintypes.RECT()
+            ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0)   # SPI_GETWORKAREA
+            s = ctk.ScalingTracker.get_window_scaling(self) or 1.0
+            wx, wy = r.left / s, r.top / s
+            ww, wh = (r.right - r.left) / s, (r.bottom - r.top) / s
+        except Exception:
+            return
+        w, h = min(800, int(ww) - 16), min(700, int(wh) - 40)       # 40 = title bar + frame
+        self.minsize(min(760, w), min(560, h))
+        self.geometry(f"{w}x{h}+{int(wx + (ww - w) / 2)}+{int(wy)}")
 
     def _set_icon(self):
         path = T.resource_path(os.path.join("assets", "icon.ico"))
@@ -118,7 +136,9 @@ class HumanTyperApp(ctk.CTk):
         self.sub_lbl = GLabel(cv, f"// human-like keystroke engine  ::  v{__version__}  ::  "
                                   "F8 start/stop  F9 pause //", f9, T.DIM)
         self.sub_lbl.moveto(14, sub_y)
+        self._sub_y = sub_y
         self.rowconfigure(0, minsize=int(sub_y + f9.metrics("linespace") + 8))
+        self.ai_top_btn = GButton(cv, "[ ✦ AI WRITE ]", self._open_ai, fnt=T.font(10, True), color=T.PINK)
 
         # left column: input (opaque) ------------------------------------
         inp = self.inp_panel = Panel(self, "PASTE TEXT // [first][revised] = later revision", f9, bg=T.PANEL)
@@ -288,6 +308,11 @@ class HumanTyperApp(ctk.CTk):
         opaque = [(wdg.winfo_x(), wdg.winfo_y(), wdg.winfo_x() + wdg.winfo_width(),
                    wdg.winfo_y() + wdg.winfo_height())]
         W = self.winfo_width()
+        ab = self.ai_top_btn
+        ab.moveto(W - ab.width() - 14, self._sub_y - 4)
+        b = ab.bbox()
+        if b:
+            trects.append(b)
         # right column: face box on top, log box below, both painted on the galaxy
         rx0, rx1 = opaque[0][2] + 8, W - 10
         ry0 = opaque[0][1] - 2
@@ -450,10 +475,11 @@ class HumanTyperApp(ctk.CTk):
             self._phase += 1
             self._hue = (self._hue + (0.01 if typing else 0.004)) % 2.0
             self.bg.step(typing)
-            self._draw_banner()
+            if self._phase % 2 == 0:
+                self._draw_banner()
             if self._phase % (2 if typing else 4) == 0:
                 self._draw_face()
-            delay = 80 if typing else 125
+            delay = 120 if typing else 160
         self._anim_id = self.after(delay, self._anim)
 
     def _blink(self):

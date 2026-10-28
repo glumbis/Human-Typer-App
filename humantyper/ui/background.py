@@ -22,7 +22,7 @@ RAMP = " .'`,:;-~=+*o%#@"          # dark -> bright (plain ASCII: same width in 
 PROBE_CHARS = ""                    # kept for API compatibility (no exotic glyphs needed)
 NLEV = len(RAMP) - 1
 HUES = ("#9b5cff", "#4d7cff", "#5ce1ff", "#ff5cc8", "#e9e4ff")   # violet, blue, cyan, pink, star-white
-TONES = (0.40, 0.70, 1.00)        # brightness tones per hue, mixed toward the background
+TONES = (0.50, 0.95)        # brightness tones per hue, mixed toward the background
 K = len(HUES) * len(TONES)
 TAU = 2 * math.pi
 
@@ -58,6 +58,7 @@ class GalaxyBackground:
         self._items = []
         self._state = []
         self._mask = None
+        self._neb = None
         self._text_rects, self._opaque = [], []
         self._zones = []
         self._focus = None
@@ -124,6 +125,7 @@ class GalaxyBackground:
         self.cols, self.rows = w // self.cw + 1, h // self.ch + 1
         c.delete("bg")
         self._items, self._state = [], []
+        self._used = [[True, True] for _ in range(K)]
         for r in range(self.rows):
             ids = [c.create_text(0, r * self.ch, anchor="nw", text="", fill=self.pal[k], font=self.fnt,
                                  tags=("bg",)) for k in range(K)]
@@ -140,6 +142,9 @@ class GalaxyBackground:
         self.star = rng.random((self.rows, self.cols)) < 0.035
         self.star_ph = rng.random((self.rows, self.cols)) * TAU
         self.star_sp = 0.6 + rng.random((self.rows, self.cols)) * 2.4
+        self._star_idx = np.nonzero(self.star)
+        self._star_ph, self._star_sp = self.star_ph[self._star_idx], self.star_sp[self._star_idx]
+        self._neb = None
         self._geometry()
         self._build_mask()
         self.step(force=True)
@@ -202,6 +207,7 @@ class GalaxyBackground:
         self.t += dts
         self._events(dt, dts, typing)
         B, H = self._field(self.t)
+        self._full = force
         self._render(B, H)
 
     def _events(self, dt, dts, typing):
@@ -226,23 +232,40 @@ class GalaxyBackground:
             rp[4] += dt
         self._ripples = [rp for rp in self._ripples if rp[4] < rp[5]]
 
-    def _field(self, t):
+    def _win(self, cx, cy, rx, ry):
+        """Grid slices covering the pixel box (cx +- rx, cy +- ry), or None if off-grid."""
+        c0, c1 = max(0, int((cx - rx) // self.cw)), min(self.cols, int((cx + rx) // self.cw) + 1)
+        r0, r1 = max(0, int((cy - ry) // self.ch)), min(self.rows, int((cy + ry) // self.ch) + 1)
+        if c1 <= c0 or r1 <= r0:
+            return None
+        return (slice(r0, r1), slice(c0, c1))
+
+    def _nebula(self, t):
         X, Y, S = self.X, self.Y, self.S
         x, y = X / S, Y / S
-        # --- nebula: domain-warped interfering waves ---
         u = x * 3.2 + 0.7 * np.sin(y * 2.3 + t * 0.11)
         v = y * 3.2 + 0.7 * np.sin(x * 1.9 - t * 0.09)
         c = (np.sin(u * 1.3 + t * 0.07) * np.sin(v * 1.1 - t * 0.05)
              + 0.55 * np.sin(u * 2.9 - v * 2.1 + t * 0.13)
              + 0.30 * np.sin(u * 5.7 + v * 4.3 - t * 0.21))
         cloud = np.clip((c + 0.7) / 2.1, 0, 1) ** 1.5 * 1.05 * (0.75 + 0.5 * self.grain)
-        B = cloud
         Hn = (0.5 + 0.5 * np.sin(u * 0.7 - v * 0.5 + t * 0.04)) * 1.6     # violet->blue->(cyan) by region
         Hn = np.where(np.sin(u * 0.9 + v * 1.3 - t * 0.03) > 0.55, 3.0, Hn)  # pink filaments
-        HW = cloud * Hn
-        # --- spiral galaxies ---
+        return cloud, cloud * Hn
+
+    def _field(self, t):
+        X, Y, S = self.X, self.Y, self.S
+        # --- nebula: domain-warped interfering waves (slow, so recomputed every other frame) ---
+        self._nframe = getattr(self, "_nframe", 0) + 1
+        if self._nframe % 2 == 1 or self._neb is None or self._neb[0].shape != X.shape:
+            self._neb = self._nebula(t)
+        B, HW = self._neb[0].copy(), self._neb[1].copy()
+        # --- spiral galaxies (only evaluated inside their own bounding box) ---
         for (gx, gy, R, tilt, rot, spin) in self.gals:
-            dx, dy = X - gx, Y - gy
+            sl = self._win(gx, gy, R * 2.4, R * 2.4)
+            if sl is None:
+                continue
+            dx, dy = X[sl] - gx, Y[sl] - gy
             ca, sa = math.cos(rot), math.sin(rot)
             px, py = dx * ca + dy * sa, (-dx * sa + dy * ca) / tilt
             r = np.hypot(px, py) / R + 1e-6
@@ -251,63 +274,79 @@ class GalaxyBackground:
             arm = np.clip(arm, 0, 1) ** 2
             fall = np.exp(-r * 1.7)
             core = np.exp(-(r / 0.10) ** 2)
-            g = core * 1.8 + arm * fall * (0.8 + 1.0 * self.grain) + fall * 0.30
+            g = core * 1.8 + arm * fall * (0.8 + 1.0 * self.grain[sl]) + fall * 0.30
             g = g * (r < 2.4)
-            B = B + g
+            B[sl] += g
             hg = np.clip(r * 2.2, 0, 1) * 2.0 + 0.4          # core white-ish -> cyan -> blue arms
             hg = np.where(core > 0.35, 4.0, hg)
-            HW = HW + g * hg
+            HW[sl] += g * hg
         # --- black hole orbiting the first galaxy ---
         gx, gy, R = self.gals[0][0], self.gals[0][1], self.gals[0][2]
         ang = t * 0.12
         bx, by = gx + math.cos(ang) * R * 0.75, gy + math.sin(ang) * R * 0.30
-        dx, dy = X - bx, Y - by
         rr = S * 0.045
-        ex, ey = dx / rr, dy / (rr * 0.32)
-        re = np.hypot(ex, ey)
-        disk = np.exp(-((re - 2.3) / 0.7) ** 2) * (0.75 + 0.6 * np.cos(np.arctan2(ey, ex) - t * 2.0))
-        rp = np.hypot(dx, dy) / rr
-        photon = np.exp(-((rp - 1.05) / 0.16) ** 2) * 1.2
-        bh = disk * 1.3 + photon
-        shadow = (rp < 0.95) & (np.abs(ey) > 0.0)
-        B = np.where(shadow, 0.0, B + bh)
-        HW = np.where(shadow, 0.0, HW + bh * np.where(np.sin(np.arctan2(ey, ex) - t * 2.0) > 0, 3.0, 2.0))
+        sl = self._win(bx, by, rr * 3.5, rr * 1.6)
+        if sl is not None:
+            dx, dy = X[sl] - bx, Y[sl] - by
+            ex, ey = dx / rr, dy / (rr * 0.32)
+            re = np.hypot(ex, ey)
+            ang_d = np.arctan2(ey, ex) - t * 2.0
+            disk = np.exp(-((re - 2.3) / 0.7) ** 2) * (0.75 + 0.6 * np.cos(ang_d))
+            rp = np.hypot(dx, dy) / rr
+            photon = np.exp(-((rp - 1.05) / 0.16) ** 2) * 1.2
+            bh = disk * 1.3 + photon
+            shadow = rp < 0.95
+            B[sl] = np.where(shadow, 0.0, B[sl] + bh)
+            HW[sl] = np.where(shadow, 0.0, HW[sl] + bh * np.where(np.sin(ang_d) > 0, 3.0, 2.0))
         # --- ripples (supernova shock rings / keystrokes) ---
         for (cx, cy, r, _vr, age, life, st) in self._ripples:
-            d = np.hypot(X - cx, Y - cy)
+            wdt = S * 0.012 + r * 0.06
+            ext = r + 3 * wdt + S * 0.06
+            sl = self._win(cx, cy, ext, ext)
+            if sl is None:
+                continue
+            d = np.hypot(X[sl] - cx, Y[sl] - cy)
             fade = (1 - age / life) * st
-            ring = np.exp(-((d - r) / (S * 0.012 + r * 0.06)) ** 2) * fade * 1.4
-            flash = np.exp(-(d / (S * 0.03)) ** 2) * max(0.0, 1 - age * 2.5) * 2.0 * st
-            B = B + ring + flash
-            HW = HW + (ring + flash) * 3.0
-        # --- twinkling stars ---
-        tw = 0.5 + 0.5 * np.sin(t * self.star_sp + self.star_ph)
-        sb = np.where(self.star, 0.25 + tw ** 2 * 1.2, 0.0)
-        B = B + sb
-        HW = HW + sb * 4.0
+            val = np.exp(-((d - r) / wdt) ** 2) * fade * 1.4
+            fl = max(0.0, 1 - age * 2.5) * 2.0 * st
+            if fl > 0:
+                val = val + np.exp(-(d / (S * 0.03)) ** 2) * fl
+            B[sl] += val
+            HW[sl] += val * 3.0
+        # --- twinkling stars (only the star cells) ---
+        si = self._star_idx
+        tw = 0.5 + 0.5 * np.sin(t * self._star_sp + self._star_ph)
+        sb = 0.25 + tw ** 2 * 1.2
+        B[si] += sb
+        HW[si] += sb * 4.0
         # --- shooting stars: bright head + fading trail ---
+        L = S * 0.22
         for (sx, sy, vx, vy, age, life) in self._shoots:
             sp = math.hypot(vx, vy) or 1.0
             ux, uy = vx / sp, vy / sp
-            dx, dy = X - sx, Y - sy
+            tx, ty = sx - ux * L, sy - uy * L
+            sl = self._win((sx + tx) / 2, (sy + ty) / 2, abs(sx - tx) / 2 + 2 * self.cw,
+                           abs(sy - ty) / 2 + 2 * self.ch)
+            if sl is None:
+                continue
+            dx, dy = X[sl] - sx, Y[sl] - sy
             along = -(dx * ux + dy * uy)                     # distance behind the head
             perp = np.abs(dx * uy - dy * ux)
-            L = S * 0.22
             trail = (along > -self.cw) & (along < L) & (perp < self.ch * 0.6)
             val = np.where(trail, (1 - np.clip(along, 0, L) / L) ** 1.5 * 1.6 * (1 - age / life), 0.0)
-            B = B + val
-            HW = HW + val * 4.0
+            B[sl] += val
+            HW[sl] += val * 4.0
         H = HW / np.maximum(B, 1e-6)
-        B = B * (0.78 + 0.32 * self.bright)
+        B *= 0.78 + 0.32 * self.bright
         return B, H
 
     def _render(self, B, H):
-        lvl = np.clip((B * NLEV + 0.15).astype(int), 0, NLEV)
+        lvl = np.clip((B * NLEV - 0.35).astype(int), 0, NLEV)
         if self._mask is not None:
             lvl[self._mask] = 0
         chars = self.ramp[lvl]
         hue = np.clip(np.rint(H), 0, len(HUES) - 1).astype(int)
-        tone = np.clip((B * 3.0).astype(int), 0, len(TONES) - 1)
+        tone = np.clip((B * 2.0).astype(int), 0, len(TONES) - 1)
         bucket = hue * len(TONES) + tone
         # glitch tears: shift a few rows sideways for a couple of frames (never into masked cells)
         keep = []
@@ -325,12 +364,27 @@ class GalaxyBackground:
         self._tears = keep
         blank = chars == " "
         c = self.canvas
+        n = self.cols * 4
+        rows = range(self.rows)
+        if self._mask is not None:
+            rows = [r for r in rows if not self._mask[r].all()]
+        half = None if self._full else self._nframe % 2
+        if half is not None:
+            rows = [r for r in rows if r % 2 == half]          # interleave: half the rows per frame
+        present = np.bincount(bucket[~blank], minlength=K)
+        st = self._state
         for k in range(K):
+            # skip a colour layer that is empty now and was already cleared on these rows
+            used = self._used[k]
+            halves = (0, 1) if half is None else (half,)
+            if not present[k] and not any(used[h] for h in halves):
+                continue
+            for h in halves:
+                used[h] = bool(present[k])
             layer = np.where((bucket == k) & ~blank, chars, " ")
             raw = np.ascontiguousarray(layer).tobytes()
-            n = self.cols * 4
-            for r in range(self.rows):
-                s = raw[r * n:(r + 1) * n].decode("utf-32-le").rstrip()
-                if s != self._state[r][k]:
-                    self._state[r][k] = s
-                    c.itemconfigure(self._items[r][k], text=s)
+            for r in rows:
+                line = raw[r * n:(r + 1) * n].decode("utf-32-le").rstrip()
+                if line != st[r][k]:
+                    st[r][k] = line
+                    c.itemconfigure(self._items[r][k], text=line)
