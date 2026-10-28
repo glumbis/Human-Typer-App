@@ -1,5 +1,11 @@
-"""Global hotkeys (F8 start/stop, F9 pause/resume) that are suppressed system-wide."""
+"""Global hotkeys (F8 start/stop, F9 pause/resume) that are suppressed system-wide.
+
+Windows: pynput's low-level keyboard hook. macOS: our own Quartz CGEventTap on a private CFRunLoop
+thread (MacEventTap). pynput's mac Listener is NOT used: its thread looks up the keyboard layout via
+TISCopyCurrentKeyboardInputSource/TSMGetInputSourceProperty, which macOS 14+ only allows on the main
+thread; anywhere else the process is killed (EXC_BREAKPOINT in dispatch_assert_queue_fail)."""
 import os
+import threading
 from typing import Callable, Optional
 
 from . import plat
@@ -18,6 +24,10 @@ MAC_KEYUP = 11           # kCGEventKeyUp
 MAC_FIELD_KEYCODE = 9    # kCGKeyboardEventKeycode
 MAC_FIELD_AUTOREPEAT = 8  # kCGKeyboardEventAutorepeat
 MAC_FIELD_SRC_PID = 41   # kCGEventSourceUnixProcessID
+MAC_TAP_DISABLED = (0xFFFFFFFE, 0xFFFFFFFF)   # kCGEventTapDisabledByTimeout / ...ByUserInput
+MAC_KEY_MASK = (1 << MAC_KEYDOWN) | (1 << MAC_KEYUP)
+TAP_HELP = ("grant Accessibility and Input Monitoring (System Settings > Privacy & Security), "
+            "then restart Human Typer")
 
 
 def mac_handle(held: set, callbacks: dict, event_type: int, keycode: int,
@@ -43,6 +53,79 @@ def mac_handle(held: set, callbacks: dict, event_type: int, keycode: int,
         held.discard(keycode)
         return True
     return False
+
+
+class MacEventTap:
+    """Active keyboard CGEventTap (keyDown/keyUp only) running on its own CFRunLoop thread.
+
+    handler(event_type, event) -> True to swallow the event. The callback only reads integer fields
+    of the event, so no keyboard-layout (TSM) API is ever touched off the main thread. Without the
+    Accessibility / Input Monitoring permission CGEventTapCreate returns NULL: start() raises."""
+
+    def __init__(self, handler, quartz=None):
+        self.handler = handler
+        self.Q = quartz
+        self._tap = None
+        self._loop = None
+        self._thread = None
+        self._cb = None                       # keep the Python callback alive
+        self.error = ""
+
+    def _callback(self, proxy, etype, event, refcon):
+        try:
+            if int(etype) in MAC_TAP_DISABLED:          # macOS disabled us (slow callback): re-arm
+                if self._tap is not None:
+                    self.Q.CGEventTapEnable(self._tap, True)
+                return event
+            if self.handler(int(etype), event):
+                return None
+        except Exception:
+            pass
+        return event
+
+    def _run(self, ready):
+        Q = self.Q
+        try:
+            self._cb = self._callback
+            tap = Q.CGEventTapCreate(Q.kCGSessionEventTap, Q.kCGHeadInsertEventTap,
+                                     Q.kCGEventTapOptionDefault, MAC_KEY_MASK, self._cb, None)
+            if tap is None:
+                self.error = TAP_HELP
+                return
+            src = Q.CFMachPortCreateRunLoopSource(None, tap, 0)
+            loop = Q.CFRunLoopGetCurrent()
+            Q.CFRunLoopAddSource(loop, src, Q.kCFRunLoopCommonModes)
+            Q.CGEventTapEnable(tap, True)
+            self._tap, self._loop = tap, loop
+        except Exception as e:
+            self.error = f"{type(e).__name__}: {e}"
+            return
+        finally:
+            ready.set()
+        Q.CFRunLoopRun()
+
+    def start(self, timeout=3.0):
+        if self.Q is None:
+            import Quartz
+            self.Q = Quartz
+        ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, args=(ready,), name="ht-hotkeys", daemon=True)
+        self._thread.start()
+        if not ready.wait(timeout):
+            self.error = "event tap did not start"
+        if self._loop is None:
+            raise RuntimeError(self.error or TAP_HELP)
+
+    def stop(self):
+        tap, loop = self._tap, self._loop
+        self._tap = self._loop = None
+        try:
+            if tap is not None:
+                self.Q.CGEventTapEnable(tap, False)
+            if loop is not None:
+                self.Q.CFRunLoopStop(loop)
+        except Exception:
+            pass
 
 
 class GlobalHotkeys:
@@ -78,38 +161,30 @@ class GlobalHotkeys:
             self._listener.suppress_event()   # raises; event never reaches other apps
         return False                          # we never need on_press/on_release
 
-    def _mac_intercept(self, event_type, event):
-        """pynput darwin_intercept: return None to suppress, event to pass through."""
-        try:
-            import Quartz
-            kc = Quartz.CGEventGetIntegerValueField(event, MAC_FIELD_KEYCODE)
-            rep = Quartz.CGEventGetIntegerValueField(event, MAC_FIELD_AUTOREPEAT)
-            pid = Quartz.CGEventGetIntegerValueField(event, MAC_FIELD_SRC_PID)
-            if mac_handle(self._held, self._mac_callbacks, int(event_type), int(kc),
-                          int(rep), int(pid), os.getpid()):
-                return None
-        except Exception:
-            pass
-        return event
+    def _mac_event(self, event_type, event) -> bool:
+        """MacEventTap handler: True = swallow the event."""
+        import Quartz
+        kc = Quartz.CGEventGetIntegerValueField(event, MAC_FIELD_KEYCODE)
+        if int(kc) not in self._mac_callbacks:
+            return False
+        rep = Quartz.CGEventGetIntegerValueField(event, MAC_FIELD_AUTOREPEAT)
+        pid = Quartz.CGEventGetIntegerValueField(event, MAC_FIELD_SRC_PID)
+        return mac_handle(self._held, self._mac_callbacks, int(event_type), int(kc),
+                          int(rep), int(pid), os.getpid())
 
     def start(self) -> None:
         """Start the listener. Raises RuntimeError with a readable message on failure
         (also sets .ok / .error)."""
         self.ok, self.error = False, ""
         try:
-            from pynput import keyboard
             if plat.IS_MAC:
-                self._listener = keyboard.Listener(darwin_intercept=self._mac_intercept)
+                self._listener = MacEventTap(self._mac_event)
+                self._listener.start()
             else:
+                from pynput import keyboard
                 self._listener = keyboard.Listener(win32_event_filter=self._filter)
-            self._listener.daemon = True
-            self._listener.start()
-            if plat.IS_MAC:
-                import time
-                time.sleep(0.15)
-                # pynput's mac listener dies quietly without Input Monitoring permission
-                if not self._listener.is_alive():
-                    raise RuntimeError("grant Input Monitoring (System Settings > Privacy & Security)")
+                self._listener.daemon = True
+                self._listener.start()
             self.ok = True
         except Exception as e:
             self.error = str(e) or type(e).__name__

@@ -918,5 +918,63 @@ class HumanTyperApp(ctk.CTk):
         self.destroy()
 
 
-def main():
-    HumanTyperApp().mainloop()
+# ---- hidden `--smoke <log>`: drive the real UI for CI launch checks (no user input needed) --------
+SMOKE_TEXT = "smoke test [one][two] 123\nline two"
+
+
+def smoke_steps(app):
+    """(name, action, wait_ms) list exercised by --smoke; also covers the typing worker thread,
+    which without the Accessibility permission must fail (or post nothing) without crashing."""
+    return [
+        ("overlay off", lambda: app._set_overlay(False), 400),
+        ("overlay on", lambda: app._set_overlay(True), 400),
+        ("animation off", lambda: app._set_animation(False), 400),
+        ("animation on", lambda: app._set_animation(True), 400),
+        ("open ai window", app._open_ai, 1500),
+        ("set text", lambda: app._use_ai_text(SMOKE_TEXT), 300),
+        ("fast settings", lambda: (app.wpm_var.set(200), app.typo_var.set(5)), 100),
+        ("hotkey f8 start", lambda: app.events.put(("hotkey", "f8")), 2500),
+        ("hotkey f9 pause", lambda: app.events.put(("hotkey", "f9")), 800),
+        ("hotkey f9 resume", lambda: app.events.put(("hotkey", "f9")), 2500),
+        ("hotkey f8 stop", lambda: app.events.put(("hotkey", "f8")), 1500),
+        ("overlay start", app._overlay_start, 2500),
+        ("stop", app._stop, 1000),
+        ("start button", app._start_button, 1500),
+        ("stop countdown", app._stop, 500),
+    ]
+
+
+def run_smoke(app, log_path):
+    def log(msg):
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+
+    steps = smoke_steps(app)
+    log(f"SMOKE START v{__version__} hotkeys_ok={app.hotkeys.ok} err={app.hotkeys.error!r}")
+
+    def run(i):
+        if i >= len(steps):
+            log(f"SMOKE DONE state={app.st}")
+            return
+        name, fn, wait = steps[i]
+        try:
+            fn()
+            log(f"step {name}: ok (state={app.st})")
+        except Exception as e:
+            log(f"step {name}: {type(e).__name__}: {e}")
+        app.after(wait, lambda: run(i + 1))
+
+    app.after(1500, lambda: run(0))
+
+
+def main(argv=None):
+    import sys
+    argv = sys.argv[1:] if argv is None else argv
+    app = HumanTyperApp()
+    if "--smoke" in argv:
+        i = argv.index("--smoke")
+        run_smoke(app, argv[i + 1] if i + 1 < len(argv) else "smoke.log")
+    app.mainloop()

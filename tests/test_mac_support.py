@@ -280,3 +280,87 @@ def test_windows_handle_unchanged():
     assert g.handle(0x100, hk.VK_F8, 0) is True and calls == [8]
     assert g.handle(0x100, hk.VK_F8, hk.LLKHF_INJECTED) is False
     assert g.ok is False and g.error == ""
+
+
+# ---------------- macOS event tap (fake Quartz) ----------------
+import threading as _th
+
+
+class FakeQuartz:
+    kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault = 1, 0, 0
+    kCFRunLoopCommonModes = "common"
+
+    def __init__(self, tap_ok=True):
+        self.tap_ok = tap_ok
+        self.created = None
+        self.enabled = []
+        self.stopped = _th.Event()
+        self.run_thread = None
+
+    def CGEventTapCreate(self, where, place, opts, mask, cb, refcon):
+        self.created = (where, place, opts, mask, cb)
+        return "TAP" if self.tap_ok else None
+
+    def CFMachPortCreateRunLoopSource(self, alloc, tap, order):
+        return "SRC"
+
+    def CFRunLoopGetCurrent(self):
+        return "LOOP"
+
+    def CFRunLoopAddSource(self, loop, src, mode):
+        pass
+
+    def CGEventTapEnable(self, tap, on):
+        self.enabled.append(on)
+
+    def CFRunLoopRun(self):
+        self.run_thread = _th.current_thread()
+        self.stopped.wait(5)
+
+    def CFRunLoopStop(self, loop):
+        self.stopped.set()
+
+
+def test_mac_event_tap_runs_on_own_thread_and_filters():
+    seen = []
+    q = FakeQuartz()
+    tap = hk.MacEventTap(lambda t, e: seen.append((t, e)) or e == "F8", quartz=q)
+    tap.start()
+    assert q.created[3] == hk.MAC_KEY_MASK == (1 << 10) | (1 << 11)
+    assert q.created[2] == q.kCGEventTapOptionDefault      # active tap: may swallow events
+    cb = q.created[4]
+    assert cb(None, hk.MAC_KEYDOWN, "F8", None) is None     # swallowed
+    assert cb(None, hk.MAC_KEYDOWN, "a", None) == "a"       # passed through
+    assert cb(None, 0xFFFFFFFE, "x", None) == "x" and q.enabled[-1] is True   # re-armed after timeout
+    tap.stop()
+    assert q.stopped.is_set() and q.enabled[-1] is False
+    assert q.run_thread is not _th.main_thread()
+
+
+def test_mac_event_tap_handler_error_passes_event():
+    q = FakeQuartz()
+    tap = hk.MacEventTap(lambda t, e: 1 / 0, quartz=q)
+    tap.start()
+    assert q.created[4](None, hk.MAC_KEYDOWN, "ev", None) == "ev"
+    tap.stop()
+
+
+def test_mac_event_tap_without_permission_raises():
+    q = FakeQuartz(tap_ok=False)
+    tap = hk.MacEventTap(lambda t, e: False, quartz=q)
+    with pytest.raises(RuntimeError, match="Input Monitoring"):
+        tap.start()
+    tap.stop()                                               # harmless
+
+
+def test_global_hotkeys_mac_uses_event_tap_not_pynput(monkeypatch):
+    """pynput's mac Listener reads the keyboard layout (TSM) on its own thread, which kills the
+    process on macOS 14+; GlobalHotkeys must use MacEventTap instead."""
+    monkeypatch.setattr(hk.plat, "IS_MAC", True)
+    started = []
+    monkeypatch.setattr(hk.MacEventTap, "start", lambda self, timeout=3.0: started.append(self))
+    import sys as _sys
+    monkeypatch.setitem(_sys.modules, "pynput", None)        # any pynput import would fail
+    g = hk.GlobalHotkeys(lambda: None, lambda: None)
+    g.start()
+    assert g.ok and isinstance(started[0], hk.MacEventTap)

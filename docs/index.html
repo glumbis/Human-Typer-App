@@ -113,6 +113,27 @@
   .opt[aria-checked="true"] { color: var(--cyan); background: #1a1440; }
   .opt:disabled { color: #3d3566; cursor: not-allowed; text-decoration: line-through; }
   .opt:focus-visible { outline: 1px solid var(--cyan); }
+  .build-row .opt { font-size: 14px; color: var(--text); border: 1px solid var(--line); padding: 5px 8px; }
+  .build-row .opt[aria-checked="true"] { border-color: var(--cyan); }
+  .build-row.flash .opt:not(:disabled) { border-color: var(--pink); color: var(--pink); }
+  .hint { color: var(--dim); font-size: 12.5px; margin: 6px 0 0; min-height: 1.4em; }
+  .hint b { color: var(--pink); font-weight: 400; }
+  .dl.off { color: var(--dim); border-color: var(--line); box-shadow: none; cursor: pointer; }
+  .dl.off:hover, .dl.off:focus-visible { background: none; color: var(--pink); border-color: var(--pink); }
+  .macsteps {
+    margin: 22px 0 0; padding: 16px 18px 12px;
+    border: 1px solid var(--pink); background: rgba(255, 92, 200, 0.06);
+    font-size: 18px; line-height: 1.45; color: var(--text);
+  }
+  .macsteps ol { margin: 0; padding-left: 26px; }
+  .macsteps li { margin: 0 0 12px; padding-left: 4px; }
+  .macsteps li::marker { color: var(--pink); font-weight: 700; }
+  .macsteps .head { margin: 0 0 12px; color: var(--pink); font-weight: 700; font-size: 20px; }
+  .macsteps b { color: var(--ice); }
+  .macsteps i { color: var(--cyan); font-style: normal; }
+  .macsteps .alt { margin: 4px 0 0; font-size: 13px; color: var(--dim); }
+  .macsteps code { color: var(--cyan); word-break: break-all; }
+  @media (max-width: 520px) { .macsteps { font-size: 16px; } }
   [hidden] { display: none !important; }
   .note { color: var(--dim); font-size: 12px; margin-top: 14px; }
   .note b { color: var(--text); font-weight: 400; }
@@ -149,15 +170,28 @@
         <label class="lbl" for="sel-ver"><span class="n">6)</span> VERSION <span class="dots"></span></label>
         <select id="sel-ver" aria-label="Version"></select>
       </div>
-      <div class="row">
-        <span class="lbl"><span class="n">7)</span> BUILD <span class="dots"></span></span>
-        <span class="opts" id="builds" role="radiogroup" aria-label="Build"></span>
+      <div class="row build-row" id="build-row">
+        <span class="lbl"><span class="n">7)</span> YOUR COMPUTER <span class="dots"></span></span>
+        <span class="opts" id="builds" role="radiogroup" aria-label="Your computer"></span>
       </div>
+      <div class="hint" id="hint"></div>
     </div>
 
     <div class="dl-wrap">
       <a class="dl" id="dl" href="https://github.com/glumbis/Human-Typer-App/releases/latest">[ &darr; DOWNLOAD ]</a>
       <div class="meta" id="meta">loading releases from GitHub…</div>
+    </div>
+
+    <div class="macsteps" id="macsteps" hidden>
+      <p class="head">ON A MAC, DO THIS:</p>
+      <ol>
+      <li><b>Open the downloaded .dmg</b> and drag <b>Human Typer</b> into <b>Applications</b>.</li>
+      <li><b>Open Human Typer</b> from Applications. macOS says it <i>“could not be verified”</i> and may offer <i>Move to Trash</i>: click <b>Done</b>. Do <b>not</b> move it to the Trash.</li>
+      <li>Open <b>System Settings → Privacy &amp; Security</b>, scroll down, click <b>Open Anyway</b> next to Human Typer, and confirm.</li>
+      <li>Allow <b>Accessibility</b> and <b>Input Monitoring</b> for Human Typer (System Settings → Privacy &amp; Security), then <b>restart the app</b>.</li>
+      <li>Click into any text box and press <b>fn + F8</b> to start typing.</li>
+      </ol>
+      <p class="alt">Terminal alternative for steps 2–3: <code>xattr -dr com.apple.quarantine /Applications/HumanTyper.app</code></p>
     </div>
 
     <div class="status" aria-live="polite">
@@ -181,15 +215,21 @@
       selVer = document.getElementById("sel-ver"), buildsEl = document.getElementById("builds");
   var RELEASES_PAGE = "https://github.com/" + REPO + "/releases";
   var NOTE_WIN = "Unsigned app: if Windows SmartScreen appears, click <b>More info → Run anyway</b>. No admin rights needed.";
-  var NOTE_MAC = "Unsigned app: on first launch <b>right-click → Open</b>, then grant <b>Accessibility</b> and " +
-                 "<b>Input Monitoring</b> in System Settings → Privacy &amp; Security.";
+  var NOTE_MAC = "The “could not be verified” warning is normal: the app isn't signed with a paid Apple certificate. " +
+                 "Follow the steps above.";
   // id, button label, file pattern, platform, size/requirement note
   var BUILDS = [
-    { id: "win-setup", label: "WIN INSTALLER", re: /setup.*\.exe$/i, os: "windows", req: "Windows 10/11" },
-    { id: "win-portable", label: "WIN PORTABLE", re: /^HumanTyper\.exe$/i, os: "windows", req: "Windows 10/11, no install" },
-    { id: "mac-arm64", label: "MAC APPLE SILICON", re: /mac-arm64\.dmg$/i, os: "mac", req: "macOS 11+, M1 or newer" },
-    { id: "mac-x86_64", label: "MAC INTEL", re: /mac-x86_64\.dmg$/i, os: "mac", req: "macOS 11+, Intel" }
+    { id: "win-setup", label: "WINDOWS", re: /setup.*\.exe$/i, os: "windows", req: "Windows 10/11 installer",
+      name: "Windows (installer)" },
+    { id: "win-portable", label: "WINDOWS PORTABLE", re: /^HumanTyper\.exe$/i, os: "windows",
+      req: "Windows 10/11, single .exe, no install", name: "Windows portable .exe" },
+    { id: "mac-arm64", label: "MAC M1/M2/M3/M4", re: /mac-arm64\.dmg$/i, os: "mac", req: "macOS 11+, Apple Silicon",
+      name: "Mac with an Apple M-chip" },
+    { id: "mac-x86_64", label: "MAC INTEL", re: /mac-x86_64\.dmg$/i, os: "mac", req: "macOS 11+, Intel",
+      name: "Mac with an Intel chip" }
   ];
+  var hintEl = document.getElementById("hint"), macsteps = document.getElementById("macsteps"),
+      buildRow = document.getElementById("build-row");
 
   var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
   var OS = /Android|iPhone|iPad|iPod/i.test(ua) ? "other" : /Win/i.test(ua) ? "windows" : /Mac/i.test(ua) ? "mac" : "other";
@@ -201,9 +241,10 @@
       if (/Intel|AMD|Radeon/i.test(gpu)) macArch = "mac-x86_64";
     } catch (e) {}
   }
-  var wanted = OS === "mac" ? macArch : "win-setup";   // the build the visitor most likely wants
+  // only a suggestion: nothing is preselected, people must pick their computer themselves
+  var wanted = OS === "mac" ? macArch : OS === "windows" ? "win-setup" : null;
 
-  var releases = [], cur = null, curBuild = wanted, buttons = {};
+  var releases = [], cur = null, curBuild = null, buttons = {};
   function mb(a) { return (a.size / 1048576).toFixed(1) + " MB"; }
   function asset(rel, b) { return (rel.assets || []).filter(function (x) { return b.re.test(x.name); })[0]; }
   function build(id) { return BUILDS.filter(function (b) { return b.id === id; })[0]; }
@@ -220,30 +261,36 @@
 
   function render() {
     if (!cur) return;
-    // keep the chosen build if this version has it; otherwise the best available one
-    if (!asset(cur, build(curBuild))) {
-      var fallbacks = [wanted, OS === "mac" ? "mac-arm64" : "win-setup", "win-setup", "mac-arm64", "win-portable", "mac-x86_64"];
-      curBuild = fallbacks.filter(function (id) { return asset(cur, build(id)); })[0] || curBuild;
-    }
+    // a choice that this version doesn't have is dropped: the visitor picks again
+    if (curBuild && !asset(cur, build(curBuild))) curBuild = null;
     BUILDS.forEach(function (b) {
       var have = !!asset(cur, b), o = buttons[b.id];
       o.disabled = !have;
-      o.title = have ? "" : "not in " + cur.tag_name;
-      o.setAttribute("aria-checked", String(b.id === curBuild && have));
+      o.title = have ? b.name : "not in " + cur.tag_name;
+      o.setAttribute("aria-checked", String(b.id === curBuild));
     });
-    var b = build(curBuild), a = asset(cur, b);
     ver.textContent = cur.tag_name;
-    if (!a) {     // e.g. the mac dmgs are still being built for a brand-new release
-      dl.href = cur.html_url || RELEASES_PAGE;
-      dl.innerHTML = "[ &darr; OPEN RELEASE PAGE ]";
-      meta.textContent = "no downloads attached to " + cur.tag_name + " yet";
+    var sug = wanted && asset(cur, build(wanted)) ? build(wanted) : null;
+    hintEl.innerHTML = curBuild ? "" : sug ? "&uarr; pick one. This looks like a <b>" + sug.name + "</b>."
+                                           : "&uarr; pick the computer you will install it on.";
+    var b = curBuild && build(curBuild), a = b && asset(cur, b);
+    macsteps.hidden = !(b && b.os === "mac");
+    if (!b) {     // nothing chosen yet: the button only asks for a choice
+      dl.removeAttribute("href");
+      dl.classList.add("off");
+      dl.innerHTML = "[ &darr; CHOOSE YOUR COMPUTER ABOVE ]";
+      var oses = BUILDS.filter(function (x) { return asset(cur, x); }).map(function (x) { return x.os; });
+      meta.textContent = cur.tag_name + " · " + (oses.indexOf("mac") >= 0 ? "Windows and macOS" : "Windows only");
+      note.innerHTML = NOTE_WIN;
+      status.textContent = "WAITING — choose your computer";
       return;
     }
+    dl.classList.remove("off");
     dl.href = a.browser_download_url;
     dl.innerHTML = "[ &darr; DOWNLOAD FOR " + (b.os === "mac" ? "MAC" : "WINDOWS") + " ]";
     meta.textContent = a.name + "  ·  " + mb(a) + "  ·  " + b.req;
     note.innerHTML = b.os === "mac" ? NOTE_MAC : NOTE_WIN;
-    status.textContent = "READY — " + cur.tag_name + " " + b.label.toLowerCase() + " selected";
+    status.textContent = "READY — " + cur.tag_name + " for " + b.name;
   }
 
   fetch("https://api.github.com/repos/" + REPO + "/releases?per_page=50", { headers: { Accept: "application/vnd.github+json" } })
@@ -261,11 +308,11 @@
       cur = latest;
       pick.hidden = false;
       render();
-      // Chromium can say Apple Silicon vs Intel outright
+      // Chromium can say Apple Silicon vs Intel outright (only sharpens the hint)
       if (OS === "mac" && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
         navigator.userAgentData.getHighEntropyValues(["architecture"]).then(function (h) {
           var id = h && h.architecture === "x86" ? "mac-x86_64" : h && h.architecture === "arm" ? "mac-arm64" : null;
-          if (id && curBuild === wanted) { wanted = curBuild = id; render(); }
+          if (id) { wanted = id; render(); }
         }).catch(function () {});
       }
     })
@@ -274,9 +321,19 @@
       dl.innerHTML = "[ &darr; DOWNLOADS ON GITHUB ]";
       meta.textContent = "all versions for Windows and macOS";
     });
-  dl.addEventListener("click", function () {
+  var flashT;
+  dl.addEventListener("click", function (e) {
+    if (!pick.hidden && !curBuild) {          // no choice yet: point at the choices, download nothing
+      e.preventDefault();
+      status.textContent = "PICK YOUR COMPUTER FIRST ↑";
+      buildRow.classList.add("flash");
+      clearTimeout(flashT);
+      flashT = setTimeout(function () { buildRow.classList.remove("flash"); }, 1200);
+      buildRow.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
     var b = build(curBuild);
-    status.textContent = b && b.os === "mac" ? "DOWNLOADING — open the dmg and drag Human Typer to Applications"
+    status.textContent = b && b.os === "mac" ? "DOWNLOADING — now follow the steps below"
                                              : "DOWNLOADING — run it when the download finishes";
   });
 

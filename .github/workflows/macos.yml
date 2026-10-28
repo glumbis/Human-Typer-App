@@ -1,6 +1,10 @@
 name: macOS build
 
 on:
+  push:
+    branches: [main]
+    paths: ["humantyper/**", "main.py", "requirements.txt", "packaging/HumanTyper.spec", "build_mac.sh",
+            "tools/**", ".github/workflows/macos.yml"]
   release:
     types: [published]
   workflow_dispatch:
@@ -40,11 +44,20 @@ jobs:
           python -m pytest -q
       - name: Build app and dmg
         run: bash build_mac.sh
+      - name: Launch check (app must start and survive a UI smoke run without permissions)
+        run: bash tools/mac_launch_check.sh dist/HumanTyper.app 30
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: crash-reports-${{ matrix.arch }}
+          path: crash-reports
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: HumanTyper-mac-${{ matrix.arch }}
           path: dist/*.dmg
       - name: Attach to release
+        if: env.TAG != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" dist/*.dmg --clobber --repo "$GITHUB_REPOSITORY"

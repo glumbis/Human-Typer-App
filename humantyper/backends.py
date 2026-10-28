@@ -9,6 +9,9 @@ class PynputBackend:
     """Sends OS-level keystrokes via pynput (Unicode safe)."""
 
     def __init__(self):
+        # macOS: create this on the MAIN thread. pynput's Controller() reads the keyboard layout via
+        # TSM/TIS here (once), which macOS 14+ only allows on the main thread (off it the process is
+        # killed). Sending keys later from the typing worker thread does not touch TSM again.
         from pynput.keyboard import Controller, Key  # lazy: keeps tests import-light
         self._kb = Controller()
         self._Key = Key
