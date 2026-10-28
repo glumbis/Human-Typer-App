@@ -6,6 +6,7 @@ DEFAULTS = {
     "wpm": 60,
     "typo_rate": 2.0,          # percent
     "revise_mode": "random",   # "random" | "end"
+    "locate_mode": "auto",     # "auto" | "clipboard" | "count"
     "always_on_top": False,
     "last_text": "",
 }

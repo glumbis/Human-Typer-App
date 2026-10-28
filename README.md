@@ -3,12 +3,37 @@
 Paste text, click into any app or website field, press **F8**, and Human Typer types it there with
 human-like timing using real OS-level keystrokes (Unicode safe: æøå etc.). The app never needs focus while typing.
 
-## Install & run (Windows)
+## Download (Windows)
+
+Get the latest build from the [GitHub Releases page](https://github.com/glumbis/Human-Typer-App/releases):
+
+- **`HumanTyper-Setup-x.y.z.exe`**: installer. Per-user (no admin needed), installs to
+  `%LOCALAPPDATA%\Programs\Human Typer`, adds a Start Menu entry (optional desktop shortcut) and an uninstaller.
+- **`HumanTyper.exe`**: portable single file. Download and double-click; nothing is installed (starts a little slower
+  because it unpacks itself on launch).
+
+The apps are not code-signed, so Windows SmartScreen may show "Windows protected your PC". Click **More info**, then
+**Run anyway**.
+
+## Run from source
 
 ```
 pip install -r requirements.txt
 python main.py
 ```
+
+## Build from source
+
+Requires Python 3.10+ and [Inno Setup 6](https://jrsoftware.org/isdl.php) (for the installer). Then, in PowerShell:
+
+```
+.uild.ps1
+```
+
+This installs the requirements plus PyInstaller, builds `dist\HumanTyper.exe` (portable, onefile) and
+`dist\HumanTyper\` (onedir, the installer payload), and compiles `dist\HumanTyper-Setup-<version>.exe`. The version
+comes from `humantyper/__init__.py`. To sanity-check a build without opening the GUI or typing anything:
+`dist\HumanTyper.exe --selftest report.txt` (writes a report and exits 0 on success).
 
 ## Hotkeys
 
@@ -24,8 +49,8 @@ Starting with F8 waits ~0.25 s so the key is released first.
 ## Revisions: `[first][revised]`
 
 Two bracket groups with nothing between `]` and `[`. The first pass types `first` and skips `revised`. Later the typer
-goes back (Left arrow N times), backspaces `first`, waits ~4 s as if thinking, types `revised` (typos possible), and
-returns to the end (Right arrow N times).
+goes back to just after `first`, backspaces it, waits ~4 s as if thinking, types `revised` (typos possible), and returns
+to where it left off.
 
 ```
 I [realy][really] like it          ->  I really like it
@@ -33,6 +58,26 @@ Meet at [noon][3 pm]               ->  Meet at 3 pm
 Hello[][, world]!                  ->  Hello, world!     (empty first: insert later)
 Keep this[ - delete me][]          ->  Keep this         (empty revised: delete later)
 ```
+
+### How the typer finds `first` again
+
+Counting arrow presses breaks when the target app autocorrects, autocompletes, auto-closes brackets or converts quotes,
+so the location is verified in layers (setting **Locate mode**, default `auto`):
+
+1. **UI Automation (exact)**: reads the focused control's text and caret through Windows UI Automation and places the
+   caret directly after `first` (no key counting). Works in Notepad, Word, most native/WPF/Chromium text fields.
+2. **Clipboard verified**: selects everything before the caret (Ctrl+Shift+Home), copies it, finds `first` in the real
+   text (closest to where it should be; the surrounding text breaks ties between duplicates), walks back with Left, then
+   selects `first` and copies it again to check it matches. Nothing is deleted unless that check passes. **Use this for
+   Google Docs** (canvas, no UI Automation text). Your clipboard is saved first and restored afterwards (all
+   memory-backed formats such as text, HTML, files and images; only GDI-handle formats are not kept).
+3. **Counting** (last resort in `auto`, or mode `count`): the old Left-N-times method; unverified. It is logged as
+   `count (unverified)` when used.
+
+Mode `clipboard` never falls back to counting: if the location cannot be verified the revision is skipped (the original
+`first` text stays). Empty `first` (`[][text]`) is located by the 16 characters typed before it.
+After the new text is typed the caret goes back to where typing left off (UI Automation: set directly; clipboard: Right
+arrow N times over the unchanged text).
 
 Rules: a lone `[x]` (not directly followed by `[...]`) is typed literally with brackets. `\[` and `\]` give literal
 brackets (also inside groups). **No nesting**: the first unescaped `]` closes a group. Newlines may appear inside groups
@@ -52,8 +97,9 @@ Newline presses Enter; a Tab character presses Tab.
 
 ## Caveats
 
-* Autocorrect, autocomplete and auto-closing brackets/quotes (Word, Google Docs, code editors) can desync the arrow-key
-  counting used by revisions. Test with a short sample first, or turn those features off.
+* Autocorrect, autocomplete and auto-closing brackets/quotes are handled by the verified locators above, but not by
+  `count` mode. If the same phrase also appears nearby and autocorrect changed the text right before it, the wrong copy
+  could in theory be chosen; use distinctive `first` text. Test with a short sample first.
 * Tab moves focus in browsers; avoid tabs in text for web forms. Enter may submit single-line fields or send chat messages.
 * Keep the target field focused and do not type or click while it runs.
 * Some elevated (administrator) windows ignore keystrokes from a non-elevated process; run Human Typer as admin for those.

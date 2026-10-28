@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional
 
 from .parser import parse, Plan
 from .timing import HumanTiming
+from .locator import choose_occurrence, normalize
 
 BOUNDARY = " \n\t.!?,;:"
 SLICE = 0.05
@@ -45,6 +46,20 @@ class Settings:
     seed: Optional[int] = None
     trigger_min: int = 60
     trigger_max: int = 400
+    locate_mode: str = "auto"        # "auto" (UIA -> clipboard -> count) | "clipboard" | "count"
+
+
+CTX_LEN = 16            # preceding-context anchor for empty-`first` insertions
+COPY_WAIT = 1.0         # max seconds to wait for the clipboard to change after Ctrl+C
+OK, BAD = "✓", "✗"
+
+
+@dataclass
+class _Loc:
+    kind: str                       # "uia" | "clipboard" | "count"
+    d: int = 0                      # real chars between phrase end and the original caret
+    text: str = ""                  # uia: document text before the revision
+    caret: int = 0                  # uia: original caret offset
 
 
 @dataclass
@@ -78,7 +93,11 @@ class TypingEngine:
                  on_progress: Optional[Callable[[float], None]] = None,
                  on_status: Optional[Callable[[str], None]] = None,
                  on_finish: Optional[Callable[[str], None]] = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep,
+                 on_log: Optional[Callable[[str], None]] = None,
+                 on_char: Optional[Callable[[str], None]] = None):
+        self.on_log = on_log
+        self.on_char = on_char
         self.backend = backend
         self.settings = settings or Settings()
         self.on_progress = on_progress
@@ -146,6 +165,20 @@ class TypingEngine:
         if self.on_status:
             self.on_status(kind)
 
+    def _log(self, msg: str) -> None:
+        if self.on_log:
+            try:
+                self.on_log(msg)
+            except Exception:
+                pass
+
+    def _char_cb(self, ch: str) -> None:
+        if self.on_char:
+            try:
+                self.on_char(ch)
+            except Exception:
+                pass
+
     def _progress(self) -> None:
         if self.on_progress and self._total:
             self.on_progress(min(1.0, self._done / self._total))
@@ -183,12 +216,14 @@ class TypingEngine:
             b.press_tab()
         else:
             b.type_char(ch)
+        self._char_cb(ch)
         self._buf.insert(self._cur, ch)
         self._cur += 1
 
     def _key_backspace(self) -> None:
         self._check()
         self.backend.backspace()
+        self._char_cb("\b")
         if self._cur > 0:
             del self._buf[self._cur - 1]
             self._cur -= 1
@@ -256,6 +291,7 @@ class TypingEngine:
             if ch in "\n\t":
                 break
             extra.append(ch)
+        self._log("typo '" + "".join(wrong) + "'->fix")
         for ch in wrong:
             self._type_one(ch, "", False)
         for idx, ch in enumerate(extra):
@@ -270,21 +306,155 @@ class TypingEngine:
         return j + total
 
     # ---- revisions ------------------------------------------------------
+    def _arrow(self, fn) -> None:
+        self._wait(self.timing.arrow_delay())
+        fn()
+
+    def _press_n(self, fn, n: int) -> None:
+        for _ in range(n):
+            self._arrow(fn)
+
+    def _copy_text(self) -> Optional[str]:
+        """Ctrl+C, wait for the clipboard to change; normalized text or None."""
+        b = self.backend
+        seq0 = b.clipboard_seq()
+        b.copy()
+        for _ in range(int(COPY_WAIT / 0.05) + 1):
+            if b.clipboard_seq() != seq0:
+                t = b.clipboard_get_text()
+                return normalize(t) if t else None
+            self._check()
+            self._sleep(0.05)
+        return None
+
+    def _locate_uia(self, tag: str, anchor: str, n: int, ctx: str = "") -> Optional[_Loc]:
+        loc = getattr(self.backend, "locator", None)
+        if loc is None:
+            self._log(f"{tag} // locate: UIA unavailable")
+            return None
+        snap = loc.snapshot()
+        if not snap:
+            self._log(f"{tag} // locate: UIA {BAD} (no text pattern)")
+            return None
+        text, caret = snap
+        if "\r\n" in text:
+            self._log(f"{tag} // locate: UIA {BAD} (CRLF offsets)")
+            return None
+        tm = normalize(text)
+        end = choose_occurrence(tm[:caret], anchor, n, ctx)
+        if end is None:
+            self._log(f"{tag} // locate: UIA {BAD} (phrase not found/ambiguous)")
+            return None
+        if not loc.select(end, text[:end]):
+            loc.select(caret, text[:caret])        # put the caret back before failing over
+            self._log(f"{tag} // locate: UIA {BAD} (select not verified)")
+            return None
+        self._log(f"{tag} // locate: UIA {OK}")
+        return _Loc("uia", caret - end, text, caret)
+
+    def _locate_clipboard(self, tag: str, anchor: str, n: int, ctx: str = "") -> Optional[_Loc]:
+        b = self.backend
+        need = ("copy", "shift_left", "select_to_start", "clipboard_seq", "clipboard_get_text",
+                "clipboard_snapshot", "clipboard_restore")
+        if not all(hasattr(b, a) for a in need):
+            self._log(f"{tag} // clipboard unavailable")
+            return None
+        snap = b.clipboard_snapshot()
+        if snap is None:
+            self._log(f"{tag} // clipboard {BAD} (cannot save clipboard)")
+            return None
+        try:
+            self._check()
+            b.select_to_start()
+            before = self._copy_text()
+            b.right()                               # collapse selection back to the caret
+            if not before:
+                self._log(f"{tag} // clipboard {BAD} (nothing copied)")
+                return None
+            end = choose_occurrence(before, anchor, n, ctx)
+            if end is None:
+                self._log(f"{tag} // clipboard {BAD} (phrase not found/ambiguous)")
+                return None
+            d = len(before) - end
+            self._press_n(b.left, d)
+            if anchor:
+                self._press_n(b.shift_left, len(anchor))
+                got = self._copy_text()
+                b.right()                           # collapse to the right edge = phrase end
+                if got != anchor:
+                    self._press_n(b.right, d)       # back to the original caret
+                    self._log(f"{tag} // clipboard verify {BAD}")
+                    return None
+            self._log(f"{tag} // locate: clipboard {OK}")
+            return _Loc("clipboard", d)
+        finally:
+            try:
+                b.clipboard_restore(snap)
+            except Exception:
+                pass
+
+    def _locate(self, tag: str, anchor: str, n: int, ctx: str = "") -> Optional[_Loc]:
+        mode = self.settings.locate_mode
+        if mode not in ("auto", "clipboard", "count"):
+            mode = "auto"
+        if mode == "auto":
+            loc = self._locate_uia(tag, anchor, n, ctx)
+            if loc:
+                return loc
+        if mode in ("auto", "clipboard"):
+            loc = self._locate_clipboard(tag, anchor, n, ctx)
+            if loc:
+                return loc
+            if mode == "clipboard":
+                self._log(f"{tag} // skipped (location not verified)")
+                return None
+            self._log(f"{tag} // clipboard verify {BAD} -> counting")
+        self._press_n(self.backend.left, n)
+        self._log(f"{tag} // locate: count (unverified)")
+        return _Loc("count", n)
+
+    def _return(self, tag: str, loc: _Loc) -> None:
+        b = self.backend
+        if loc.kind == "uia":
+            u = b.locator
+            snap = u.snapshot() if u else None
+            if snap:
+                text2, _c = snap
+                after = loc.text[loc.caret:]
+                target = len(text2) - len(after)
+                if target >= 0 and text2[target:] == after and u.select(target, text2[:target]):
+                    self._log(f"{tag} // return: UIA {OK}")
+                    return
+            self._log(f"{tag} // return: UIA {BAD} -> arrows")
+        self._press_n(b.right, loc.d)
+
     def _apply_revision(self, r: _Rev) -> None:
         self._emit_status("revising")
+        tag = f"REV {r.index + 1}/{self._nrev}"
         n = len(self._buf) - r.end            # chars between end of `first` and cursor
         # cursor is always at the end of the buffer between operations
-        for _ in range(n):
-            self._wait(self.timing.arrow_delay())
-            self._key_left()
+        anchor = r.first
+        if not anchor:                        # pure insertion: anchor on preceding context
+            anchor = "".join(self._buf[max(0, r.start - CTX_LEN):r.start])
+        ctx = "".join(self._buf[max(0, r.start - 24):r.start])
+        loc = self._locate(tag, anchor, n, ctx)
+        if loc is None:                       # location not verified: skip, never delete blindly
+            self._pending.remove(r)
+            self._emit_status("typing")
+            return
+        self._cur = r.end
         for _ in range(len(r.first)):
             self._wait(self.timing.backspace_delay())
             self._key_backspace()
         self._wait(self.timing.revision_think())
         self._type_run(r.revised, typos=True)
-        for _ in range(n):
-            self._wait(self.timing.arrow_delay())
-            self._key_right()
+        if loc.kind == "count":
+            for _ in range(n):
+                self._wait(self.timing.arrow_delay())
+                self._key_right()
+        else:
+            self._return(tag, loc)
+        self._cur = len(self._buf)
         delta = len(r.revised) - len(r.first)
         for o in self._pending:
             if o is not r and o.index > r.index:
@@ -304,6 +474,7 @@ class TypingEngine:
         self._buf, self._cur = [], 0
         self._total = len(plan.text) + sum(len(r.revised) for r in plan.revisions)
         self._done = 0
+        self._nrev = len(plan.revisions)
         mode = self.settings.revise_mode
         self._pending = [
             _Rev(r.index, r.start, r.first, r.revised, r.end,

@@ -5,5 +5,5 @@ __pycache__/
 venv/
 build/
 dist/
-*.spec
+!packaging/*.spec
 *.egg-info/

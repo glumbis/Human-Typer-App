@@ -1,6 +1,6 @@
 """Keystroke backends: real (pynput) and a fake text-buffer simulator for tests."""
 import time
-from typing import List
+from typing import List, Optional
 
 
 class PynputBackend:
@@ -33,17 +33,115 @@ class PynputBackend:
     def right(self) -> None:
         self._tap(self._Key.right)
 
+    # ---- selection / clipboard primitives used by the verified locator ----
+    def _combo(self, mods, key) -> None:
+        for m in mods:
+            self._kb.press(m)
+        try:
+            time.sleep(0.015)
+            self._tap(key)
+            time.sleep(0.015)
+        finally:
+            for m in reversed(mods):
+                self._kb.release(m)
+
+    def shift_left(self) -> None:
+        self._combo([self._Key.shift], self._Key.left)
+
+    def select_to_start(self) -> None:
+        self._combo([self._Key.ctrl, self._Key.shift], self._Key.home)
+
+    def copy(self) -> None:
+        self._combo([self._Key.ctrl], "c")
+
+    def clipboard_seq(self) -> int:
+        from . import clipboard
+        return clipboard.sequence_number()
+
+    def clipboard_get_text(self):
+        from . import clipboard
+        return clipboard.get_text()
+
+    def clipboard_set_text(self, text: str) -> None:
+        from . import clipboard
+        clipboard.set_text(text)
+
+    def clipboard_snapshot(self):
+        from . import clipboard
+        return clipboard.snapshot()
+
+    def clipboard_restore(self, snap) -> None:
+        from . import clipboard
+        clipboard.restore(snap)
+
+    @property
+    def locator(self):
+        """Lazily created UI Automation locator (None if comtypes is missing)."""
+        if not hasattr(self, "_locator"):
+            try:
+                import comtypes  # noqa: F401
+                from .locator import UiaLocator
+                self._locator = UiaLocator()
+            except Exception:
+                self._locator = None
+        return self._locator
+
+
+class FakeLocator:
+    """Fake UIA locator over a FakeBackend (same snapshot/select interface as UiaLocator)."""
+
+    def __init__(self, backend: "FakeBackend", available: bool = True, refuse_select: bool = False,
+                 crlf: bool = False):
+        self.b = backend
+        self.available = available
+        self.refuse_select = refuse_select
+        self.crlf = crlf
+        self.calls: List[str] = []
+
+    def snapshot(self):
+        self.calls.append("snapshot")
+        if not self.available:
+            return None
+        text = self.b.text
+        if self.crlf:
+            c = text.replace("\n", "\r\n")
+            return c, len(text[:self.b.cursor].replace("\n", "\r\n"))
+        return text, self.b.cursor
+
+    def select(self, offset: int, expected_prefix: str) -> bool:
+        self.calls.append(f"select:{offset}")
+        if not self.available or self.refuse_select:
+            return False
+        self.b.sel = None
+        self.b.cursor = max(0, min(offset, len(self.b.buf)))
+        return self.b.text[:self.b.cursor] == expected_prefix
+
 
 class FakeBackend:
-    """Simulates a plain text field with a cursor. `key_latency` > 0 makes each
-    key really sleep; the default 0 is the zero-sleep mode used by tests."""
+    """Simulates a plain text field with a cursor, a selection, a clipboard and an
+    optional autocorrect hook. `key_latency` > 0 makes each key really sleep; the
+    default 0 is the zero-sleep mode used by tests.
 
-    def __init__(self, initial: str = "", key_latency: float = 0.0):
+    autocorrect: callable(fake) invoked after every typed character; it may mutate
+    fake.buf / fake.cursor to simulate autocorrect, auto-closing brackets, etc.
+    clipboard_works=False simulates a field where Ctrl+C copies nothing."""
+
+    def __init__(self, initial: str = "", key_latency: float = 0.0, autocorrect=None,
+                 crlf_clipboard: bool = False, clipboard_works: bool = True,
+                 locator_available: Optional[bool] = None, clipboard_initial: str = ""):
         self.buf: List[str] = list(initial)
         self.cursor = len(self.buf)
+        self.sel: Optional[int] = None          # selection anchor (cursor is the active end)
         self.key_latency = key_latency
         self.errors: List[str] = []   # impossible actions (backspace at 0, etc.)
         self.keys = 0
+        self.autocorrect = autocorrect
+        self.crlf_clipboard = crlf_clipboard
+        self.clipboard_works = clipboard_works
+        self.clipboard = clipboard_initial
+        self.clip_seq = 1
+        self.clip_restored = 0
+        self.locator = FakeLocator(self, available=locator_available) if locator_available is not None else None
 
     @property
     def text(self) -> str:
@@ -54,9 +152,22 @@ class FakeBackend:
         if self.key_latency > 0:
             time.sleep(self.key_latency)
 
+    def _delete_selection(self) -> bool:
+        if self.sel is None or self.sel == self.cursor:
+            self.sel = None
+            return False
+        a, b = sorted((self.sel, self.cursor))
+        del self.buf[a:b]
+        self.cursor = a
+        self.sel = None
+        return True
+
     def _insert(self, ch: str):
+        self._delete_selection()
         self.buf.insert(self.cursor, ch)
         self.cursor += 1
+        if self.autocorrect:
+            self.autocorrect(self)
 
     def type_char(self, ch: str) -> None:
         self._tick()
@@ -72,6 +183,8 @@ class FakeBackend:
 
     def backspace(self) -> None:
         self._tick()
+        if self._delete_selection():
+            return
         if self.cursor == 0:
             self.errors.append("backspace at start")
             return
@@ -80,6 +193,10 @@ class FakeBackend:
 
     def left(self) -> None:
         self._tick()
+        if self.sel is not None:
+            self.cursor = min(self.sel, self.cursor)
+            self.sel = None
+            return
         if self.cursor == 0:
             self.errors.append("left at start")
             return
@@ -87,7 +204,51 @@ class FakeBackend:
 
     def right(self) -> None:
         self._tick()
+        if self.sel is not None:
+            self.cursor = max(self.sel, self.cursor)
+            self.sel = None
+            return
         if self.cursor >= len(self.buf):
             self.errors.append("right at end")
             return
         self.cursor += 1
+
+    def shift_left(self) -> None:
+        self._tick()
+        if self.sel is None:
+            self.sel = self.cursor
+        if self.cursor > 0:
+            self.cursor -= 1
+
+    def select_to_start(self) -> None:
+        self._tick()
+        if self.sel is None:
+            self.sel = self.cursor
+        self.cursor = 0
+
+    def copy(self) -> None:
+        self._tick()
+        if not self.clipboard_works or self.sel is None or self.sel == self.cursor:
+            return
+        a, b = sorted((self.sel, self.cursor))
+        t = "".join(self.buf[a:b])
+        self.clipboard = t.replace("\n", "\r\n") if self.crlf_clipboard else t
+        self.clip_seq += 1
+
+    def clipboard_seq(self) -> int:
+        return self.clip_seq
+
+    def clipboard_get_text(self):
+        return self.clipboard
+
+    def clipboard_set_text(self, text: str) -> None:
+        self.clipboard = text
+        self.clip_seq += 1
+
+    def clipboard_snapshot(self):
+        return self.clipboard
+
+    def clipboard_restore(self, snap) -> None:
+        self.clipboard = snap
+        self.clip_seq += 1
+        self.clip_restored += 1

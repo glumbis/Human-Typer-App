@@ -57,7 +57,8 @@ def test_revision_key_sequence_exact():
             return _o(*a)
         setattr(fb, name, wrap)
     sleeps = []
-    eng = TypingEngine(fb, Settings(typo_rate=0, revise_mode="end", seed=1), sleep=sleeps.append)
+    eng = TypingEngine(fb, Settings(typo_rate=0, revise_mode="end", seed=1, locate_mode="count"),
+                       sleep=sleeps.append)
     eng.run("ab[cd][XYZ]ef\ng")
     assert fb.text == "abXYZef\ng"
     keys = [k for k, _ in log]
