@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Human Typer</title>
+<meta name="description" content="Human Typer types your text into any app with human-like timing, typos and revisions. Free Windows download.">
+<link rel="icon" href="favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #07051a;
+    --panel: rgba(10, 8, 34, 0.84);
+    --line: #3b2c80;
+    --dim: #8279b8;
+    --text: #d9d6ff;
+    --ice: #bfe6ff;
+    --violet: #9b5cff;
+    --blue: #4d7cff;
+    --cyan: #5ce1ff;
+    --pink: #ff5cc8;
+    --mono: "JetBrains Mono", Consolas, "Cascadia Mono", "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 15px;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+  #sky { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+  main {
+    position: relative; z-index: 1;
+    min-height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 40px 16px;
+  }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  #banner {
+    margin: 0;
+    font-family: var(--mono);
+    font-weight: 700;
+    line-height: 1.02;
+    /* 80 columns must fit the viewport: shrink on phones */
+    font-size: clamp(5px, calc((100vw - 32px) / 49), 15px);
+    white-space: pre;
+    text-shadow: 0 0 18px rgba(155, 92, 255, 0.35);
+    user-select: none;
+  }
+  .sub { color: var(--dim); font-size: 13px; margin: 10px 0 28px; text-align: center; }
+  .box {
+    position: relative;
+    width: min(680px, 100%);
+    border: 1px solid var(--line);
+    background: var(--panel);
+    padding: 26px 22px 20px;
+    backdrop-filter: blur(2px);
+  }
+  .box > .title {
+    position: absolute; top: -0.8em; left: 12px;
+    background: var(--bg); color: var(--ice); padding: 0 6px; font-size: 13px;
+  }
+  .menu { list-style: none; margin: 0; padding: 0; }
+  .menu li { display: flex; gap: 10px; padding: 3px 0; flex-wrap: wrap; }
+  .menu .n { color: var(--dim); }
+  .menu .k { color: var(--text); }
+  .menu .dots { color: var(--line); flex: 1; overflow: hidden; white-space: nowrap; min-width: 20px; }
+  .menu .dots::before { content: "................................................................"; }
+  .menu .v { color: var(--cyan); background: #1a1440; padding: 0 3px; margin-left: auto; }
+  .menu .v.pink { color: var(--pink); }
+  .dl-wrap { text-align: center; margin: 26px 0 6px; }
+  .dl {
+    display: inline-block;
+    font-family: var(--mono); font-weight: 700; font-size: 20px;
+    color: var(--cyan); text-decoration: none;
+    padding: 10px 18px;
+    border: 1px solid var(--cyan);
+    box-shadow: 0 0 24px rgba(92, 225, 255, 0.18), inset 0 0 18px rgba(92, 225, 255, 0.08);
+    transition: background .12s, color .12s, box-shadow .12s;
+  }
+  .dl:hover, .dl:focus-visible {
+    background: var(--cyan); color: var(--bg); outline: none;
+    box-shadow: 0 0 34px rgba(92, 225, 255, 0.55);
+  }
+  .meta { color: var(--dim); font-size: 12.5px; text-align: center; margin-top: 10px; min-height: 1.5em; }
+  .status { margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 14px; }
+  .status .pre { color: var(--dim); }
+  .status .msg { color: var(--cyan); font-weight: 700; }
+  .cursor { display: inline-block; width: .6em; background: var(--cyan); animation: blink 1.06s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .note { color: var(--dim); font-size: 12px; margin-top: 14px; }
+  .note b { color: var(--text); font-weight: 400; }
+  footer { color: var(--dim); font-size: 12px; margin-top: 22px; text-align: center; }
+  footer a { color: var(--violet); text-decoration: none; }
+  footer a:hover { color: var(--pink); }
+  @media (max-width: 520px) {
+    body { font-size: 13px; }
+    .dl { font-size: 16px; padding: 9px 12px; }
+    .menu .dots { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="sky" aria-hidden="true"></canvas>
+<main>
+  <h1 class="sr">Human Typer</h1>
+  <pre id="banner" aria-hidden="true"></pre>
+  <div class="sub">// human-like keystroke engine :: <span id="ver">windows</span> :: F8 start/stop  F9 pause //</div>
+
+  <section class="box" aria-label="Human Typer">
+    <span class="title">[ HUMAN TYPER // types like a person ]</span>
+    <ul class="menu">
+      <li><span class="n">1)</span><span class="k">TYPES INTO ANY APP</span><span class="dots"></span><span class="v">[YES]</span></li>
+      <li><span class="n">2)</span><span class="k">HUMAN RHYTHM + TYPOS</span><span class="dots"></span><span class="v">[WPM 10-200]</span></li>
+      <li><span class="n">3)</span><span class="k">[first][revised] EDITS</span><span class="dots"></span><span class="v">[GOES BACK]</span></li>
+      <li><span class="n">4)</span><span class="k">LOCAL AI WRITER</span><span class="dots"></span><span class="v pink">[OFFLINE]</span></li>
+      <li><span class="n">5)</span><span class="k">GLOBAL HOTKEYS</span><span class="dots"></span><span class="v">[F8 / F9]</span></li>
+    </ul>
+
+    <div class="dl-wrap">
+      <a class="dl" id="dl" href="https://github.com/glumbis/Human-Typer-App/releases/latest">[ &darr; DOWNLOAD FOR WINDOWS ]</a>
+      <div class="meta" id="meta">latest installer from GitHub</div>
+    </div>
+
+    <div class="status" aria-live="polite">
+      <span class="pre">STATUS &gt;</span> <span class="msg" id="status">READY — grab the installer</span><span class="cursor">&nbsp;</span>
+    </div>
+    <div class="note">Unsigned app: if Windows SmartScreen appears, click <b>More info → Run anyway</b>. No admin rights needed.</div>
+  </section>
+
+  <footer><a href="https://github.com/glumbis/Human-Typer-App">source on github</a></footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var REPO = "glumbis/Human-Typer-App";
+
+  // ---- download button: newest release's Setup installer ------------------------------
+  var dl = document.getElementById("dl"), meta = document.getElementById("meta"),
+      status = document.getElementById("status"), ver = document.getElementById("ver");
+  fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (rel) {
+      var a = (rel.assets || []).filter(function (x) { return /setup.*\.exe$/i.test(x.name); })[0];
+      if (!a) return;
+      dl.href = a.browser_download_url;
+      var mb = (a.size / 1048576).toFixed(1);
+      meta.textContent = a.name + "  ·  " + mb + " MB  ·  Windows 10/11";
+      ver.textContent = rel.tag_name;
+    })
+    .catch(function () { /* keep the releases-page fallback link */ });
+  dl.addEventListener("click", function () { status.textContent = "DOWNLOADING — run the installer when it finishes"; });
+
+  // ---- banner (same ANSI-Shadow letters and nebula gradient as the app) ----------------
+  var FIG = {
+    H: ["██╗  ██╗", "██║  ██║", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"],
+    U: ["██╗   ██╗", "██║   ██║", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "],
+    M: ["███╗   ███╗", "████╗ ████║", "██╔████╔██║", "██║╚██╔╝██║", "██║ ╚═╝ ██║", "╚═╝     ╚═╝"],
+    A: [" █████╗ ", "██╔══██╗", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"],
+    N: ["███╗   ██╗", "████╗  ██║", "██╔██╗ ██║", "██║╚██╗██║", "██║ ╚████║", "╚═╝  ╚═══╝"],
+    T: ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "],
+    Y: ["██╗   ██╗", "╚██╗ ██╔╝", " ╚████╔╝ ", "  ╚██╔╝  ", "   ██║   ", "   ╚═╝   "],
+    P: ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔═══╝ ", "██║     ", "╚═╝     "],
+    E: ["███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "███████╗", "╚══════╝"],
+    R: ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔══██╗", "██║  ██║", "╚═╝  ╚═╝"],
+    " ": ["   ", "   ", "   ", "   ", "   ", "   "]
+  };
+  var STOPS = [[155, 92, 255], [77, 124, 255], [92, 225, 255], [255, 92, 200]];
+  function grad(t, dim) {
+    t = Math.min(1, Math.max(0, t)) * (STOPS.length - 1);
+    var i = Math.min(Math.floor(t), STOPS.length - 2), f = t - i, a = STOPS[i], b = STOPS[i + 1];
+    dim = dim == null ? 1 : dim;
+    return "rgb(" + [0, 1, 2].map(function (k) { return Math.round((a[k] + (b[k] - a[k]) * f) * dim); }).join(",") + ")";
+  }
+  var lines = ["", "", "", "", "", ""];
+  "HUMAN TYPER".split("").forEach(function (ch) { for (var r = 0; r < 6; r++) lines[r] += FIG[ch][r]; });
+  var W = lines[0].length, banner = document.getElementById("banner"), cells = [];
+  lines.forEach(function (line) {
+    for (var c = 0; c < W; c++) {
+      var ch = line[c], s = document.createElement("span");
+      s.textContent = ch;
+      if (ch !== " ") cells.push({ el: s, c: c, solid: ch === "█" });
+      banner.appendChild(s);
+    }
+    banner.appendChild(document.createTextNode("\n"));
+  });
+  function paintBanner(hue) {
+    for (var i = 0; i < cells.length; i++) {
+      var o = cells[i], t = Math.abs(((o.c / W * 0.9 + hue) % 2) - 1);
+      o.el.style.color = grad(t, o.solid ? 1 : 0.55);
+    }
+  }
+
+  // ---- full-window ASCII galaxy (a port of the app's backdrop) ------------------------
+  var RAMP = " .'`,:;-~=+*o%#@", NLEV = RAMP.length - 1;
+  var HUES = ["#9b5cff", "#4d7cff", "#5ce1ff", "#ff5cc8", "#e9e4ff"], TONES = [0.5, 0.95];
+  function mix(hex, t) {
+    var bg = [7, 5, 26], c = [1, 3, 5].map(function (i) { return parseInt(hex.substr(i, 2), 16); });
+    return "rgb(" + [0, 1, 2].map(function (k) { return Math.round(bg[k] + (c[k] - bg[k]) * t); }).join(",") + ")";
+  }
+  var PAL = [];
+  HUES.forEach(function (h) { TONES.forEach(function (t) { PAL.push(mix(h, t)); }); });
+
+  var cv = document.getElementById("sky"), ctx = cv.getContext("2d");
+  var dpr, cw, ch, cols, rows, B, HW, grain, stars, gals, S, t = 0, last = 0;
+  var shoots = [], ripples = [], nextShoot = 2, nextNova = 6;
+  var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function rnd(seed) { return function () { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }; }
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.floor(innerWidth * dpr); cv.height = Math.floor(innerHeight * dpr);
+    var fs = innerWidth < 600 ? 9 : 11;
+    ctx.font = (fs * dpr) + "px Consolas, 'JetBrains Mono', monospace";
+    ctx.textBaseline = "top";
+    cw = ctx.measureText("M").width; ch = fs * 1.25 * dpr;
+    cols = Math.ceil(cv.width / cw); rows = Math.ceil(cv.height / ch);
+    B = new Float32Array(cols * rows); HW = new Float32Array(cols * rows);
+    var r = rnd(7); grain = new Float32Array(cols * rows); stars = [];
+    for (var i = 0; i < cols * rows; i++) {
+      grain[i] = r();
+      if (r() < 0.035) stars.push([i, r() * 6.283, 0.6 + r() * 2.4]);
+    }
+    S = Math.min(cv.width, cv.height);
+    var wide = innerWidth > 900;
+    gals = [[cv.width * (wide ? 0.86 : 0.75), cv.height * 0.80, S * 0.30, 0.8, 0.25, 1.0],
+            [cv.width * (wide ? 0.12 : 0.2), cv.height * 0.16, S * 0.22, 0.6, -0.5, -1.3]];
+  }
+
+  function field() {
+    var x, y, i, r, c, X, Y, u, v, cl, hn;
+    for (r = 0; r < rows; r++) {
+      Y = (r + 0.5) * ch;
+      for (c = 0; c < cols; c++) {
+        i = r * cols + c; X = (c + 0.5) * cw; x = X / S; y = Y / S;
+        u = x * 3.2 + 0.7 * Math.sin(y * 2.3 + t * 0.11);
+        v = y * 3.2 + 0.7 * Math.sin(x * 1.9 - t * 0.09);
+        cl = Math.sin(u * 1.3 + t * 0.07) * Math.sin(v * 1.1 - t * 0.05)
+           + 0.55 * Math.sin(u * 2.9 - v * 2.1 + t * 0.13) + 0.30 * Math.sin(u * 5.7 + v * 4.3 - t * 0.21);
+        cl = Math.min(1, Math.max(0, (cl + 0.7) / 2.1));
+        cl = Math.pow(cl, 1.5) * 1.05 * (0.75 + 0.5 * grain[i]);
+        hn = (0.5 + 0.5 * Math.sin(u * 0.7 - v * 0.5 + t * 0.04)) * 1.6;
+        if (Math.sin(u * 0.9 + v * 1.3 - t * 0.03) > 0.55) hn = 3;
+        B[i] = cl; HW[i] = cl * hn;
+      }
+    }
+    gals.forEach(function (g) {
+      var gx = g[0], gy = g[1], R = g[2], tilt = g[3], ca = Math.cos(g[4]), sa = Math.sin(g[4]), spin = g[5];
+      var c0 = Math.max(0, Math.floor((gx - R * 2.4) / cw)), c1 = Math.min(cols, Math.ceil((gx + R * 2.4) / cw));
+      var r0 = Math.max(0, Math.floor((gy - R * 2.4) / ch)), r1 = Math.min(rows, Math.ceil((gy + R * 2.4) / ch));
+      for (var rr = r0; rr < r1; rr++) for (var cc = c0; cc < c1; cc++) {
+        var k = rr * cols + cc, dx = (cc + 0.5) * cw - gx, dy = (rr + 0.5) * ch - gy;
+        var px = dx * ca + dy * sa, py = (-dx * sa + dy * ca) / tilt;
+        var rad = Math.hypot(px, py) / R + 1e-6;
+        if (rad >= 2.4) continue;
+        var arm = Math.cos(2 * (Math.atan2(py, px) - spin * t * 0.35) + 3.2 * Math.log(rad + 0.04));
+        arm = arm > 0 ? arm * arm : 0;
+        var fall = Math.exp(-rad * 1.7), core = Math.exp(-(rad / 0.1) * (rad / 0.1));
+        var gv = core * 1.8 + arm * fall * (0.8 + grain[k]) + fall * 0.3;
+        B[k] += gv;
+        HW[k] += gv * (core > 0.35 ? 4 : Math.min(1, rad * 2.2) * 2 + 0.4);
+      }
+    });
+    // black hole orbiting the first galaxy
+    var g0 = gals[0], ang = t * 0.12, bx = g0[0] + Math.cos(ang) * g0[2] * 0.75, by = g0[1] + Math.sin(ang) * g0[2] * 0.3;
+    var rr0 = S * 0.045;
+    for (var br = Math.max(0, Math.floor((by - rr0 * 1.6) / ch)); br < Math.min(rows, Math.ceil((by + rr0 * 1.6) / ch)); br++)
+      for (var bc = Math.max(0, Math.floor((bx - rr0 * 3.5) / cw)); bc < Math.min(cols, Math.ceil((bx + rr0 * 3.5) / cw)); bc++) {
+        var k2 = br * cols + bc, ddx = (bc + 0.5) * cw - bx, ddy = (br + 0.5) * ch - by;
+        var ex = ddx / rr0, ey = ddy / (rr0 * 0.32), ad = Math.atan2(ey, ex) - t * 2;
+        var disk = Math.exp(-Math.pow((Math.hypot(ex, ey) - 2.3) / 0.7, 2)) * (0.75 + 0.6 * Math.cos(ad));
+        var rp = Math.hypot(ddx, ddy) / rr0, ph = Math.exp(-Math.pow((rp - 1.05) / 0.16, 2)) * 1.2;
+        if (rp < 0.95) { B[k2] = 0; HW[k2] = 0; continue; }
+        var bh = disk * 1.3 + ph;
+        B[k2] += bh; HW[k2] += bh * (Math.sin(ad) > 0 ? 3 : 2);
+      }
+    ripples.forEach(function (p) {
+      var wdt = S * 0.012 + p[2] * 0.06, ext = p[2] + 3 * wdt + S * 0.06, fade = (1 - p[3] / p[4]) * p[5];
+      var fl = Math.max(0, 1 - p[3] * 2.5) * 2 * p[5];
+      for (var r3 = Math.max(0, Math.floor((p[1] - ext) / ch)); r3 < Math.min(rows, Math.ceil((p[1] + ext) / ch)); r3++)
+        for (var c3 = Math.max(0, Math.floor((p[0] - ext) / cw)); c3 < Math.min(cols, Math.ceil((p[0] + ext) / cw)); c3++) {
+          var k3 = r3 * cols + c3, d = Math.hypot((c3 + 0.5) * cw - p[0], (r3 + 0.5) * ch - p[1]);
+          var val = Math.exp(-Math.pow((d - p[2]) / wdt, 2)) * fade * 1.4;
+          if (fl > 0) val += Math.exp(-Math.pow(d / (S * 0.03), 2)) * fl;
+          B[k3] += val; HW[k3] += val * 3;
+        }
+    });
+    stars.forEach(function (s) {
+      var tw = 0.5 + 0.5 * Math.sin(t * s[2] + s[1]), sb = 0.25 + tw * tw * 1.2;
+      B[s[0]] += sb; HW[s[0]] += sb * 4;
+    });
+    var L = S * 0.22;
+    shoots.forEach(function (s) {
+      var sp = Math.hypot(s[2], s[3]) || 1, ux = s[2] / sp, uy = s[3] / sp, tx = s[0] - ux * L, ty = s[1] - uy * L;
+      var c0 = Math.max(0, Math.floor((Math.min(s[0], tx) - 2 * cw) / cw)), c1 = Math.min(cols, Math.ceil((Math.max(s[0], tx) + 2 * cw) / cw));
+      var r0 = Math.max(0, Math.floor((Math.min(s[1], ty) - 2 * ch) / ch)), r1 = Math.min(rows, Math.ceil((Math.max(s[1], ty) + 2 * ch) / ch));
+      for (var r4 = r0; r4 < r1; r4++) for (var c4 = c0; c4 < c1; c4++) {
+        var dx4 = (c4 + 0.5) * cw - s[0], dy4 = (r4 + 0.5) * ch - s[1];
+        var along = -(dx4 * ux + dy4 * uy), perp = Math.abs(dx4 * uy - dy4 * ux);
+        if (along > -cw && along < L && perp < ch * 0.6) {
+          var v4 = Math.pow(1 - Math.max(0, along) / L, 1.5) * 1.6 * (1 - s[4] / s[5]);
+          B[r4 * cols + c4] += v4; HW[r4 * cols + c4] += v4 * 4;
+        }
+      }
+    });
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    var buckets = PAL.map(function () { return []; }), i, n = cols * rows;
+    for (i = 0; i < n; i++) {
+      var b = B[i] * 0.85, lvl = Math.min(NLEV, Math.max(0, Math.floor(b * NLEV - 0.35)));
+      if (!lvl) continue;
+      var hue = Math.min(HUES.length - 1, Math.max(0, Math.round(HW[i] / Math.max(B[i], 1e-6))));
+      var tone = Math.min(TONES.length - 1, Math.floor(b * 2));
+      buckets[hue * TONES.length + tone].push(i, lvl);
+    }
+    buckets.forEach(function (list, k) {
+      if (!list.length) return;
+      ctx.fillStyle = PAL[k];
+      for (var j = 0; j < list.length; j += 2) {
+        var idx = list[j];
+        ctx.fillText(RAMP[list[j + 1]], (idx % cols) * cw, Math.floor(idx / cols) * ch);
+      }
+    });
+  }
+
+  function events(dt) {
+    nextShoot -= dt;
+    if (nextShoot <= 0) {
+      var x = (Math.random() * 1.2 - 0.1) * cv.width, a = (0.25 + Math.random() * 0.35) * (x < cv.width / 2 ? 1 : -1);
+      var sp = S * (0.7 + Math.random() * 0.5);
+      shoots.push([x, -10, Math.sin(a) * sp, Math.cos(a) * sp, 0, 0.9 + Math.random() * 0.7]);
+      nextShoot = 1.5 + Math.random() * 3;
+    }
+    nextNova -= dt;
+    if (nextNova <= 0) {
+      // [x, y, radius, age, life, strength, speed]
+      ripples.push([Math.random() * cv.width, Math.random() * cv.height, 0, 0, 2.6, 1, S * 0.22]);
+      nextNova = 7 + Math.random() * 9;
+    }
+    shoots.forEach(function (s) { s[0] += s[2] * dt; s[1] += s[3] * dt; s[4] += dt; });
+    shoots = shoots.filter(function (s) { return s[4] < s[5]; });
+    ripples.forEach(function (p) { p[2] += p[6] * dt; p[3] += dt; });
+    ripples = ripples.filter(function (p) { return p[3] < p[4]; });
+  }
+
+  var hue = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (document.hidden || now - last < 90) return;          // ~11 fps is plenty for drifting ASCII
+    var dt = Math.min(0.5, (now - last) / 1000 || 0.1);
+    last = now;
+    t += dt;
+    events(dt);
+    field(); draw();
+    hue = (hue + dt * 0.05) % 2;
+    paintBanner(hue);
+  }
+
+  resize();
+  paintBanner(0);
+  if (reduce) { field(); draw(); }
+  else requestAnimationFrame(frame);
+  var rt;
+  addEventListener("resize", function () {
+    clearTimeout(rt);
+    rt = setTimeout(function () { resize(); field(); draw(); }, 150);
+  });
+})();
+</script>
+</body>
+</html>
