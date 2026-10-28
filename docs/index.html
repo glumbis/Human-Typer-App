@@ -46,8 +46,8 @@
     font-family: var(--mono);
     font-weight: 700;
     line-height: 1.02;
-    /* 80 columns must fit the viewport: shrink on phones */
-    font-size: clamp(5px, calc((100vw - 32px) / 49), 15px);
+    /* the 91-column banner (~54.6em wide) must fit the viewport, scrollbar included */
+    font-size: clamp(4px, calc((100vw - 56px) / 56), 15px);
     white-space: pre;
     text-shadow: 0 0 18px rgba(155, 92, 255, 0.35);
     user-select: none;
