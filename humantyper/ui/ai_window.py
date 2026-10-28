@@ -1,6 +1,7 @@
 """AI WRITE window: generate text with a local model and hand it to the paste box."""
 import os
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -8,6 +9,8 @@ from typing import Callable, Dict, Optional
 
 import customtkinter as ctk
 
+from .. import plat
+from . import macutil
 from .winutil import fit_to_workarea
 
 from ..ai import engine as eng
@@ -76,6 +79,9 @@ class AiWindow(ctk.CTkToplevel):
         self.focus_force()
 
     def _set_icon(self):
+        if plat.IS_MAC:
+            macutil.set_icon(self, T.resource_path(os.path.join("assets", "icon.png")), False)
+            return
         path = T.resource_path(os.path.join("assets", "icon.ico"))
         if os.path.exists(path):
             try:
@@ -99,8 +105,8 @@ class AiWindow(ctk.CTkToplevel):
         self.model_var = tk.StringVar()
         self.model_menu = ctk.CTkOptionMenu(
             row, variable=self.model_var, values=[INSTALL_MORE], command=self._on_model_pick,
-            font=ctk.CTkFont(family=T.font().actual("family"), size=12),
-            dropdown_font=ctk.CTkFont(family=T.font().actual("family"), size=12),
+            font=ctk.CTkFont(family=T.font().actual("family"), size=T.scale_size(12)),
+            dropdown_font=ctk.CTkFont(family=T.font().actual("family"), size=T.scale_size(12)),
             fg_color=T.INPUT_BG, button_color=T.LINE, button_hover_color=T.VIOLET,
             dropdown_fg_color=T.BG2, dropdown_hover_color=T.BG3, dropdown_text_color=T.TEXT,
             text_color=T.TEXT, corner_radius=0, height=26, dynamic_resizing=False)
@@ -125,7 +131,7 @@ class AiWindow(ctk.CTkToplevel):
         pp = Panel(self, "PROMPT // write about...", f9)
         pp.pack(fill="x", padx=10, pady=(8, 0))
         self.prompt = ctk.CTkTextbox(
-            pp.body, wrap="word", height=60, font=ctk.CTkFont(family=T.font().actual("family"), size=13),
+            pp.body, wrap="word", height=60, font=ctk.CTkFont(family=T.font().actual("family"), size=T.scale_size(13)),
             fg_color=T.INPUT_BG, text_color=T.TEXT, border_width=1, border_color=T.LINE, corner_radius=0,
             scrollbar_button_color=T.LINE, scrollbar_button_hover_color=T.VIOLET)
         self.prompt.pack(fill="x")
@@ -185,7 +191,7 @@ class AiWindow(ctk.CTkToplevel):
         op = Panel(self, "OUTPUT // editable", f9)
         op.pack(fill="both", expand=True, padx=10, pady=(6, 0))
         self.out = ctk.CTkTextbox(
-            op.body, wrap="word", font=ctk.CTkFont(family=T.font().actual("family"), size=13),
+            op.body, wrap="word", font=ctk.CTkFont(family=T.font().actual("family"), size=T.scale_size(13)),
             fg_color=T.INPUT_BG, text_color=T.TEXT, border_width=1, border_color=T.LINE, corner_radius=0,
             scrollbar_button_color=T.LINE, scrollbar_button_hover_color=T.VIOLET, height=140)
         self.out.pack(fill="both", expand=True)
@@ -386,7 +392,12 @@ class AiWindow(ctk.CTkToplevel):
         d = mdl.app_models_dir()
         os.makedirs(d, exist_ok=True)
         try:
-            os.startfile(d)
+            if plat.IS_MAC:
+                subprocess.run(["open", d], check=False)
+            elif plat.IS_WIN:
+                os.startfile(d)
+            else:
+                subprocess.run(["xdg-open", d], check=False)
         except Exception:
             pass
 

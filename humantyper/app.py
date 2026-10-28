@@ -8,20 +8,23 @@ import customtkinter as ctk
 
 from . import __version__
 from . import config
+from . import plat
 from .backends import PynputBackend
 from .engine import Settings, TypingEngine
 from .hotkeys import GlobalHotkeys
 from .parser import parse
 from .ui import art
+from .ui import macutil
 from .ui import theme as T
 from .ui.background import PROBE_CHARS, GalaxyBackground
 from .ui.widgets import (AsciiView, CanvasArt, GBox, GButton, GLabel, GToggle, GWindow, Panel,
-                         TextButton)
+                         PermBanner, TextButton)
 from .ui.overlay import StatsOverlay
 from .ui.stats import Stats
 from .ui.winutil import fit_to_workarea
 
-READY = "READY — click into any app and press F8"
+HK_START, HK_PAUSE = macutil.hotkey_labels()      # "F8"/"F9", or "fn+F8"/"fn+F9" on a Mac
+READY = f"READY — click into any app and press {HK_START}"
 MODES = {"RANDOM": "random", "END": "end"}
 LOCATE = ("auto", "clipboard", "count")
 BAR_W = 30
@@ -77,6 +80,11 @@ class HumanTyperApp(ctk.CTk):
         self._draw_banner()
         self._draw_face()
         self._set_status(READY)
+        self._perm_banner = None
+        self._perm_dismissed = False
+        self._hotkeys_failed = False
+        if plat.IS_MAC:
+            self._check_permissions(prompt=True)
 
         self.hotkeys = GlobalHotkeys(lambda: self.events.put(("hotkey", "f8")),
                                      lambda: self.events.put(("hotkey", "f9")))
@@ -84,6 +92,10 @@ class HumanTyperApp(ctk.CTk):
             self.hotkeys.start()
         except Exception as e:  # pragma: no cover
             self._set_status(f"Hotkeys unavailable: {e}", T.ERR)
+            if plat.IS_MAC:
+                self._hotkeys_failed = True
+                self._log("hotkeys unavailable: " + macutil.INPUT_MON_TEXT, "err")
+                self._show_perm_banner(macutil.INPUT_MON_TEXT, macutil.PANE_INPUT_MONITORING)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(40, self._poll)
@@ -98,7 +110,44 @@ class HumanTyperApp(ctk.CTk):
         except Exception:
             pass
 
+    # ---- macOS permissions -------------------------------------------
+    def _check_permissions(self, prompt=False):
+        """Accessibility is needed to type; Input Monitoring for F8/F9. Shows a banner if missing."""
+        trusted = macutil.ax_trusted()
+        if trusted is False:
+            self._log("macOS: Accessibility permission missing - typing will not work until it is "
+                      "granted (System Settings > Privacy & Security > Accessibility)", "err")
+            if prompt:
+                macutil.ax_trusted(prompt=True)          # ask the system to show its own prompt once
+            self._show_perm_banner(macutil.PERM_TEXT, macutil.PANE_ACCESSIBILITY)
+            self.after(3000, self._recheck_permissions)
+
+    def _recheck_permissions(self):
+        if self._perm_banner is None or not self._perm_banner.shown():
+            return
+        if macutil.ax_trusted() is not False and not self._hotkeys_failed:
+            self._perm_banner.hide()
+            self._log("macOS: Accessibility permission granted", "ok")
+        else:
+            self.after(3000, self._recheck_permissions)
+
+    def _show_perm_banner(self, text, pane):
+        if self._perm_dismissed:
+            return
+        try:
+            if self._perm_banner is None:
+                self._perm_banner = PermBanner(self, text, lambda: macutil.open_settings(self._perm_pane),
+                                               on_dismiss=lambda: setattr(self, "_perm_dismissed", True))
+            self._perm_pane = pane
+            self._perm_banner.set_text(text)
+            self._perm_banner.show()
+        except Exception:
+            pass
+
     def _set_icon(self):
+        if plat.IS_MAC:
+            macutil.set_icon(self, T.resource_path(os.path.join("assets", "icon.png")), True)
+            return
         path = T.resource_path(os.path.join("assets", "icon.ico"))
         if not os.path.exists(path):
             return
@@ -125,7 +174,7 @@ class HumanTyperApp(ctk.CTk):
         self.banner_view = CanvasArt(cv, T.font(7), 14, 12, art.Banner.tag_colors(), "bn", self.banner.rows)
         sub_y = 12 + self.banner_view.height() + 2
         self.sub_lbl = GLabel(cv, f"// human-like keystroke engine  ::  v{__version__}  ::  "
-                                  "F8 start/stop  F9 pause //", f9, T.DIM)
+                                  f"{HK_START} start/stop  {HK_PAUSE} pause //", f9, T.DIM)
         self.sub_lbl.moveto(14, sub_y)
         self._sub_y = sub_y
         self.rowconfigure(0, minsize=int(sub_y + f9.metrics("linespace") + 8))
@@ -135,7 +184,7 @@ class HumanTyperApp(ctk.CTk):
         inp = self.inp_panel = Panel(self, "PASTE TEXT // [first][revised] = later revision", f9, bg=T.PANEL)
         inp.grid(row=1, column=0, sticky="nsew", padx=(10, 4))
         self.textbox = ctk.CTkTextbox(
-            inp.body, wrap="word", font=ctk.CTkFont(family=T.font().actual("family"), size=13),
+            inp.body, wrap="word", font=ctk.CTkFont(family=T.font().actual("family"), size=T.scale_size(13)),
             fg_color=T.INPUT_BG, text_color=T.TEXT, border_width=1, border_color=T.LINE,
             corner_radius=0, scrollbar_button_color=T.LINE, scrollbar_button_hover_color=T.VIOLET,
             height=90)
@@ -230,8 +279,8 @@ class HumanTyperApp(ctk.CTk):
         self.status_pre = GLabel(cv, "STATUS >", f11, T.DIM)
         self.status = GLabel(cv, "", f11, T.ACCENT)
         self.bar = GLabel(cv, "", f10, T.ACCENT)
-        self.start_btn = GButton(cv, "[ F8 START ]", self._start_button, fnt=f11)
-        self.pause_btn = GButton(cv, "[ F9 PAUSE ]", self._toggle_pause, fnt=f11, color=T.WARN)
+        self.start_btn = GButton(cv, f"[ {HK_START} START ]", self._start_button, fnt=f11)
+        self.pause_btn = GButton(cv, f"[ {HK_PAUSE} PAUSE ]", self._toggle_pause, fnt=f11, color=T.WARN)
         self.stop_btn = GButton(cv, "[ STOP ]", self._stop, fnt=f11, color=T.ERR)
         self.pause_btn.set_enabled(False)
         self.stop_btn.set_enabled(False)
@@ -417,9 +466,18 @@ class HumanTyperApp(ctk.CTk):
             pass
 
     def _overlay_start(self):
-        """Overlay START: focus stays in the target app, so only a short delay is needed."""
-        if self.st == "idle":
-            self._hotkey_start(delay=300)
+        """Overlay START. Windows: focus stays in the target app, a short delay suffices. macOS: the
+        overlay re-activates the target app after the click, so wait a little longer; without that
+        (no pyobjc) fall back to the 3 second countdown so the user can click back into the app."""
+        if self.st != "idle":
+            return
+        if plat.IS_MAC:
+            if self.overlay is not None and self.overlay.can_return_focus():
+                self._hotkey_start(delay=600)
+            else:
+                self._start_button()
+            return
+        self._hotkey_start(delay=300)
 
     def _overlay_state(self):
         if self.st == "idle":
@@ -641,7 +699,7 @@ class HumanTyperApp(ctk.CTk):
                 self._ov_dirty = True
             return
         self._enter_active("starting")
-        self._set_status("ARMED — releasing F8...", T.WARN)
+        self._set_status(f"ARMED — releasing {HK_START}...", T.WARN)
         self._after_id = self.after(delay, self._begin_typing)   # let F8 be released
 
     def _enter_active(self, state):
@@ -696,7 +754,7 @@ class HumanTyperApp(ctk.CTk):
         self.stats.begin(self.stats.total)      # restart the clock when keys actually start flowing
         self.stats.rev_total = self._plan_revs()
         self.pause_btn.set_enabled(True)
-        self.pause_btn.configure(text="[ F9 PAUSE ]")
+        self.pause_btn.configure(text=f"[ {HK_PAUSE} PAUSE ]")
         self._set_status("TYPING 0%", T.ACCENT)
         self._log(f"SETTINGS // WPM: {self.wpm_var.get():.0f} TYPO: {self.typo_var.get():.1f}% "
                   f"LOCATE: {self.locate_btn.get().upper()}", "dim")
@@ -734,7 +792,7 @@ class HumanTyperApp(ctk.CTk):
         self._set_editing(True)
         self.start_btn.set_enabled(True)
         self.pause_btn.set_enabled(False)
-        self.pause_btn.configure(text="[ F9 PAUSE ]")
+        self.pause_btn.configure(text=f"[ {HK_PAUSE} PAUSE ]")
         self.stop_btn.set_enabled(False)
         self._set_status(message, color)
         self._draw_face()
@@ -802,14 +860,14 @@ class HumanTyperApp(ctk.CTk):
         elif kind == "status" and self.st == "typing":
             if val == "paused":
                 self.stats.pause()
-                self.pause_btn.configure(text="[ F9 RESUME ]")
-                self._set_status("PAUSED — F9 to resume", T.WARN)
+                self.pause_btn.configure(text=f"[ {HK_PAUSE} RESUME ]")
+                self._set_status(f"PAUSED — {HK_PAUSE} to resume", T.WARN)
                 self._log("PAUSED", "warn")
             else:
                 self.stats.resume()
                 self.stats.on_status(val)
                 self._kind = val
-                self.pause_btn.configure(text="[ F9 PAUSE ]")
+                self.pause_btn.configure(text=f"[ {HK_PAUSE} PAUSE ]")
                 self._set_status(self._typing_text(), T.LAVENDER if val == "revising" else T.ACCENT)
                 self._kick_anim()
         elif kind == "finished":

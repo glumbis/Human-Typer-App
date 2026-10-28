@@ -1,6 +1,9 @@
 """Win32 helpers: make a Tk toplevel a non-activating, always-on-top tool window."""
 import sys
 
+from .. import plat
+from . import macutil
+
 GWL_EXSTYLE = -20
 WS_EX_TOPMOST = 0x00000008
 WS_EX_TOOLWINDOW = 0x00000080
@@ -78,16 +81,20 @@ def foreground_hwnd() -> int:
 def fit_to_workarea(win, w, h, min_w, min_h, scaling=1.0, x_frac=0.5):
     """Size a (customtkinter) window to at most w x h logical px so it sits fully inside the
     monitor work area (small, high-DPI laptop screens cut the bottom off otherwise)."""
-    if sys.platform != "win32":
-        return
-    import ctypes
-    from ctypes import wintypes
-    r = wintypes.RECT()
-    if not ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
-        return
     s = scaling or 1.0
-    wx, wy = r.left / s, r.top / s
-    ww, wh = (r.right - r.left) / s, (r.bottom - r.top) / s
+    if plat.IS_MAC:
+        area = macutil.visible_area(win.winfo_screenwidth(), win.winfo_screenheight())
+        wx, wy, ww, wh = area[0] / s, area[1] / s, area[2] / s, area[3] / s
+    elif sys.platform != "win32":
+        return
+    else:
+        import ctypes
+        from ctypes import wintypes
+        r = wintypes.RECT()
+        if not ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+            return
+        wx, wy = r.left / s, r.top / s
+        ww, wh = (r.right - r.left) / s, (r.bottom - r.top) / s
     w, h = min(w, int(ww) - 16), min(h, int(wh) - 40)            # 40 = title bar + frame
     win.minsize(min(min_w, w), min(min_h, h))
     win.geometry(f"{w}x{h}+{int(wx + (ww - w) * x_frac)}+{int(wy)}")

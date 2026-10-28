@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional
 
 from .parser import parse, Plan
 from .timing import HumanTiming
+from . import plat
 from .locator import choose_occurrence, find_all, normalize
 
 BOUNDARY = " \n\t.!?,;:"
@@ -344,26 +345,27 @@ class TypingEngine:
     def _locate_uia(self, tag: str, anchor: str, n: int, ctx: str = "") -> Optional[_Loc]:
         loc = getattr(self.backend, "locator", None)
         if loc is None:
-            self._log(f"{tag} // locate: UIA unavailable")
+            self._log(f"{tag} // locate: {'AX' if plat.IS_MAC else 'UIA'} unavailable")
             return None
+        nm = getattr(loc, "name", "UIA")
         snap = loc.snapshot()
         if not snap:
-            self._log(f"{tag} // locate: UIA {BAD} (no text pattern)")
+            self._log(f"{tag} // locate: {nm} {BAD} (no text pattern)")
             return None
         text, caret = snap
         if "\r\n" in text:
-            self._log(f"{tag} // locate: UIA {BAD} (CRLF offsets)")
+            self._log(f"{tag} // locate: {nm} {BAD} (CRLF offsets)")
             return None
         tm = normalize(text)
         end = choose_occurrence(tm[:caret], anchor, n, ctx)
         if end is None:
-            self._log(f"{tag} // locate: UIA {BAD} (phrase not found/ambiguous)")
+            self._log(f"{tag} // locate: {nm} {BAD} (phrase not found/ambiguous)")
             return None
         if not loc.select(end, text[:end]):
             loc.select(caret, text[:caret])        # put the caret back before failing over
-            self._log(f"{tag} // locate: UIA {BAD} (select not verified)")
+            self._log(f"{tag} // locate: {nm} {BAD} (select not verified)")
             return None
-        self._log(f"{tag} // locate: UIA {OK}")
+        self._log(f"{tag} // locate: {nm} {OK}")
         return _Loc("uia", caret - end, text, caret)
 
     def _word_jumps_for(self, chars: int) -> int:
@@ -481,15 +483,16 @@ class TypingEngine:
         b = self.backend
         if loc.kind == "uia":
             u = b.locator
+            nm = getattr(u, "name", "UIA")
             snap = u.snapshot() if u else None
             if snap:
                 text2, _c = snap
                 after = loc.text[loc.caret:]
                 target = len(text2) - len(after)
                 if target >= 0 and text2[target:] == after and u.select(target, text2[:target]):
-                    self._log(f"{tag} // return: UIA {OK}")
+                    self._log(f"{tag} // return: {nm} {OK}")
                     return
-            self._log(f"{tag} // return: UIA {BAD} -> arrows")
+            self._log(f"{tag} // return: {nm} {BAD} -> arrows")
         self._press_n(b.right, loc.d)
 
     def _apply_revision(self, r: _Rev) -> None:

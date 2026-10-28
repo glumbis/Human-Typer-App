@@ -3,6 +3,8 @@ import os
 import sys
 import tkinter.font as tkfont
 
+from .. import plat
+
 # deep-space galaxy palette
 BG = "#07051a"          # near-black indigo
 BG2 = "#0d0a26"         # panels / active toggle background
@@ -28,7 +30,11 @@ INPUT_BG = "#050314"
 # nebula stops: violet -> blue -> cyan -> magenta
 STOPS = [(155, 92, 255), (77, 124, 255), (92, 225, 255), (255, 92, 200)]
 
-FONT_CANDIDATES = ("Consolas", "Cascadia Mono", "Lucida Console", "Courier New")
+# Windows names first (unchanged behaviour), then the monospaced faces macOS ships with.
+FONT_CANDIDATES = ("Consolas", "Cascadia Mono", "SF Mono", "Menlo", "Monaco",
+                   "Lucida Console", "Courier New")
+# Tk on macOS renders points at 72 dpi (Windows: 96), so text looks ~25% smaller there.
+MAC_SIZE_FACTOR = 1.25
 _fonts = {}
 _family = None
 
@@ -44,14 +50,24 @@ def resource_path(rel: str) -> str:
 def init_fonts(root) -> str:
     global _family
     avail = set(tkfont.families(root))
-    _family = next((f for f in FONT_CANDIDATES if f in avail), "Courier New")
+    _family = next((f for f in FONT_CANDIDATES if f in avail), "Menlo" if plat.IS_MAC else "Courier New")
     return _family
 
 
+def size_factor() -> float:
+    return MAC_SIZE_FACTOR if plat.IS_MAC else 1.0
+
+
+def scale_size(size):
+    """Logical font size -> size actually requested from Tk (identity on Windows)."""
+    f = size_factor()
+    return size if f == 1.0 else max(1, int(round(size * f)))
+
+
 def font(size=10, bold=False) -> tkfont.Font:
-    key = (size, bold)
+    key = (size, bold, size_factor())
     if key not in _fonts:
-        _fonts[key] = tkfont.Font(family=_family or "Consolas", size=size,
+        _fonts[key] = tkfont.Font(family=_family or "Consolas", size=scale_size(size),
                                   weight="bold" if bold else "normal")
     return _fonts[key]
 

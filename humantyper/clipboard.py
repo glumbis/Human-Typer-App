@@ -154,3 +154,11 @@ def restore(snap: Optional[Snapshot]) -> bool:
         return ok
     finally:
         u.CloseClipboard()
+
+
+# ---- macOS: same public API, implemented in clipboard_mac (NSPasteboard) ----
+from . import plat as _plat  # noqa: E402
+
+if _plat.IS_MAC:  # pragma: no cover (Windows behaviour above is untouched)
+    from .clipboard_mac import (sequence_number, get_text, set_text,  # noqa: F401,E402
+                                snapshot, restore)

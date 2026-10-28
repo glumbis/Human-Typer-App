@@ -2,6 +2,8 @@
 import time
 from typing import List, Optional
 
+from . import plat
+
 
 class PynputBackend:
     """Sends OS-level keystrokes via pynput (Unicode safe)."""
@@ -48,17 +50,28 @@ class PynputBackend:
     def shift_left(self) -> None:
         self._combo([self._Key.shift], self._Key.left)
 
+    def _mod(self, name: str):
+        """pynput modifier key by name ("ctrl" / "cmd" / "alt")."""
+        return getattr(self._Key, name)
+
     def select_to_start(self) -> None:
-        self._combo([self._Key.ctrl, self._Key.shift], self._Key.home)
+        """Select to start of document (Ctrl+Shift+Home / Cmd+Shift+Up)."""
+        if plat.IS_MAC:
+            self._combo([self._mod(plat.CMD_KEY), self._Key.shift], self._Key.up)
+        else:
+            self._combo([self._Key.ctrl, self._Key.shift], self._Key.home)
 
     def ctrl_left(self) -> None:
-        self._combo([self._Key.ctrl], self._Key.left)
+        """Word jump (Ctrl/Option+Left)."""
+        self._combo([self._mod(plat.WORD_KEY)], self._Key.left)
 
     def ctrl_shift_left(self) -> None:
-        self._combo([self._Key.ctrl, self._Key.shift], self._Key.left)
+        """Select word (Ctrl/Option+Shift+Left)."""
+        self._combo([self._mod(plat.WORD_KEY), self._Key.shift], self._Key.left)
 
     def copy(self) -> None:
-        self._combo([self._Key.ctrl], "c")
+        """Copy (Ctrl/Cmd+C)."""
+        self._combo([self._mod(plat.CMD_KEY)], "c")
 
     def clipboard_seq(self) -> int:
         from . import clipboard
@@ -82,12 +95,18 @@ class PynputBackend:
 
     @property
     def locator(self):
-        """Lazily created UI Automation locator (None if comtypes is missing)."""
+        """Lazily created exact locator: UI Automation (Windows) or Accessibility
+        API (macOS). None if the needed library is missing."""
         if not hasattr(self, "_locator"):
             try:
-                import comtypes  # noqa: F401
-                from .locator import UiaLocator
-                self._locator = UiaLocator()
+                if plat.IS_MAC:
+                    import ApplicationServices  # noqa: F401
+                    from .locator_mac import AxLocator
+                    self._locator = AxLocator()
+                else:
+                    import comtypes  # noqa: F401
+                    from .locator import UiaLocator
+                    self._locator = UiaLocator()
             except Exception:
                 self._locator = None
         return self._locator

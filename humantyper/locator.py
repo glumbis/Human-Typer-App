@@ -65,6 +65,7 @@ class UiaLocator:
     snapshot() -> (text, caret_offset) | None, select(offset, expected_prefix) -> bool."""
 
     TIMEOUT = 3.0
+    name = "UIA"
 
     def __init__(self):
         self._q: "queue.Queue" = queue.Queue()

@@ -1,4 +1,4 @@
-"""Generate assets/icon.ico (galaxy tile with a gradient 'HT'). Dev-only; needs Pillow.
+"""Generate assets/icon.ico, icon.png (512) and icon.icns (galaxy tile with a gradient 'HT'). Dev-only; needs Pillow.
 
     python tools/make_icon.py
 """
@@ -77,6 +77,13 @@ def main():
     os.makedirs(os.path.dirname(out), exist_ok=True)
     draw(256).save(out, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     print("wrote", out)
+    big = draw(512)
+    png = os.path.join(root, "assets", "icon.png")
+    big.save(png)
+    print("wrote", png)
+    icns = os.path.join(root, "assets", "icon.icns")
+    big.save(icns, format="ICNS")
+    print("wrote", icns)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@
 Paste text, click into any app or website field, press **F8**, and Human Typer types it there with
 human-like timing using real OS-level keystrokes (Unicode safe: æøå etc.). The app never needs focus while typing.
 
-## Download (Windows)
+## Download
+
+### Windows
 
 Get the latest build from the [GitHub Releases page](https://github.com/glumbis/Human-Typer-App/releases):
 
@@ -14,6 +16,36 @@ Get the latest build from the [GitHub Releases page](https://github.com/glumbis/
 
 The apps are not code-signed, so Windows SmartScreen may show "Windows protected your PC". Click **More info**, then
 **Run anyway**.
+
+### macOS (11 Big Sur or newer)
+
+From the same Releases page:
+
+- **`HumanTyper-x.y.z-mac-arm64.dmg`**: Apple Silicon (M1 and newer).
+- **`HumanTyper-x.y.z-mac-x86_64.dmg`**: Intel Macs.
+
+Open the dmg and drag **Human Typer** onto **Applications**. The app is only ad-hoc signed (no paid Apple
+Developer ID), so on first launch macOS Gatekeeper blocks it: **right-click the app, choose Open, then Open** again.
+If macOS says the app is damaged or won't open, remove the quarantine flag once:
+
+```
+xattr -dr com.apple.quarantine /Applications/HumanTyper.app
+```
+
+**Permissions.** To type into other apps Human Typer needs two permissions: open **System Settings -> Privacy &
+Security** and enable **Human Typer** under both **Accessibility** and **Input Monitoring**. **Quit and reopen the app
+after granting** (macOS only applies them on the next launch). If you rebuilt or updated the app and typing stops
+working, remove the old Human Typer entry in those lists and add it again.
+
+**Hotkeys.** F8 / F9 as on Windows. On Mac laptop keyboards the top row defaults to media keys, so press
+**fn+F8** / **fn+F9** (or enable "Use F1, F2, etc. keys as standard function keys" in System Settings -> Keyboard).
+
+**Google Docs / browsers.** Use the verified-clipboard locate mode (the default `auto` falls back to it): Google Docs has
+no accessible text, so revisions find `first` through a Cmd+C round trip. Keep the browser tab focused while typing.
+
+**AI writer.** The bundled llama.cpp engine uses Metal on Apple Silicon (GPU) and the CPU on Intel Macs. Models are
+looked up in `~/.lmstudio/models`, `~/.cache/lm-studio/models` and `~/Library/Application Support/HumanTyper/models`.
+Settings live in `~/Library/Application Support/HumanTyper`.
 
 ## Run from source
 
@@ -35,6 +67,19 @@ This installs the requirements plus PyInstaller, builds `dist\HumanTyper.exe` (p
 comes from `humantyper/__init__.py`. To sanity-check a build without opening the GUI or typing anything:
 `dist\HumanTyper.exe --selftest report.txt` (writes a report and exits 0 on success).
 
+### Build on macOS
+
+Requires Python 3.10+ and Xcode command line tools. A Mac app can only be built on a Mac; releases are built by
+GitHub Actions (`.github/workflows/macos.yml`, runs when a release is published, or manually:
+`gh workflow run macos.yml -f tag=vX.Y.Z`). Locally:
+
+```
+bash build_mac.sh
+```
+
+This fetches the pinned llama.cpp engine for your CPU, builds `dist/HumanTyper.app`, ad-hoc signs it, runs
+`--selftest` inside the bundle and creates `dist/HumanTyper-<version>-mac-<arch>.dmg`.
+
 ## Hotkeys
 
 | Key | Action |
@@ -43,7 +88,7 @@ comes from `humantyper/__init__.py`. To sanity-check a build without opening the
 | F9  | Pause / resume |
 
 F8 and F9 are swallowed system-wide while the app runs, so the target app never receives them. Esc is deliberately
-not used. The GUI also has Start (3-second countdown so you can click into the target), Pause/Resume and Stop buttons.
+not used. (On Mac use fn+F8 / fn+F9 on laptop keyboards.) The GUI also has Start (3-second countdown so you can click into the target), Pause/Resume and Stop buttons.
 Starting with F8 waits ~0.25 s so the key is released first.
 
 ### Stats overlay

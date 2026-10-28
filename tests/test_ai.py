@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
+from humantyper import plat
 from humantyper.ai import engine as E
 from humantyper.ai import models as M
 from humantyper.ai import prompts
@@ -30,7 +31,7 @@ def test_discover_skips_mmproj_and_small(tmp_path):
 
 
 def test_app_dir_models_are_deletable_external_never(tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setattr(plat, "data_dir", lambda: str(tmp_path / "HumanTyper"))
     app = M.app_models_dir()
     _touch(os.path.join(app, "Qwen3-1.7B-Q4_K_M.gguf"))
     _touch(str(tmp_path / "lm" / "other-Q4_K_M.gguf"))
@@ -218,12 +219,12 @@ def model(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _log_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "la"))
+    monkeypatch.setattr(plat, "data_dir", lambda: str(tmp_path / "la" / "HumanTyper"))
 
 
 def make_engine(popen, health="ok", settings=None, **kw):
     saved = []
-    e = E.LocalEngine(exe="C:/x/llama-server.exe", settings=settings if settings is not None else {},
+    e = E.LocalEngine(exe="C:/x/" + E.exe_name(), settings=settings if settings is not None else {},
                       popen=popen, health=lambda port: health(port) if callable(health) else health,
                       port_fn=lambda: 5555, use_job=False, start_timeout=1.0,
                       save_settings=lambda d: saved.append(dict(d)), **kw)
@@ -234,7 +235,7 @@ def make_engine(popen, health="ok", settings=None, **kw):
 def test_build_cmd():
     e, _ = make_engine(None)
     cmd = e.build_cmd("C:/m.gguf", 1234, 99)
-    assert cmd[0].endswith("llama-server.exe")
+    assert cmd[0].endswith(E.exe_name())
     for a, b in [("--host", "127.0.0.1"), ("--port", "1234"), ("-m", "C:/m.gguf"), ("-c", "12288"), ("-ngl", "99")]:
         assert cmd[cmd.index(a) + 1] == b
     assert "--jinja" in cmd

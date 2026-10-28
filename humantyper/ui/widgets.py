@@ -397,3 +397,37 @@ class GWindow:
 
     def moveto(self, x, y):
         self.canvas.coords(self.item, x, y)
+
+
+class PermBanner(tk.Frame):
+    """Slim galaxy-styled notice with an [ OPEN SETTINGS ] button and a [x] dismiss (macOS permissions)."""
+
+    def __init__(self, master, text, on_open, on_dismiss=None, fnt=None):
+        super().__init__(master, bg=T.BG2, highlightthickness=1, highlightbackground=T.PINK,
+                         highlightcolor=T.PINK)
+        f = fnt or T.font(9)
+        self.lbl = tk.Label(self, text=text, font=f, fg=T.TEXT, bg=T.BG2, justify="left",
+                            anchor="w", wraplength=520)
+        self.lbl.pack(side="left", padx=(8, 6), pady=4)
+        self.b_x = TextButton(self, "[x]", lambda: (self.hide(), on_dismiss and on_dismiss()),
+                              fnt=f, color=T.DIM)
+        self.b_x.default_bg = T.BG2
+        self.b_x.configure(bg=T.BG2)
+        self.b_x.pack(side="right", padx=(0, 4))
+        self.b_open = TextButton(self, "[ OPEN SETTINGS ]", on_open, fnt=T.font(9, True), color=T.PINK)
+        self.b_open.default_bg = T.BG2
+        self.b_open.configure(bg=T.BG2)
+        self.b_open.pack(side="right", padx=4)
+
+    def set_text(self, text):
+        self.lbl.configure(text=text)
+
+    def show(self):
+        self.place(relx=0.5, y=6, anchor="n")
+        self.lift()
+
+    def hide(self):
+        self.place_forget()
+
+    def shown(self):
+        return bool(self.winfo_manager())

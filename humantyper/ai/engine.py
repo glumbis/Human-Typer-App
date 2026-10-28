@@ -3,6 +3,7 @@ import atexit
 import http.client
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from typing import Callable, Iterator, List, Optional
 from . import settings as ai_settings
 from .. import plat
 
-EXE_NAME = "llama-server.exe"
+EXE_NAME = "llama-server.exe" if plat.IS_WIN else "llama-server"     # import-time default
 CREATE_NO_WINDOW = 0x08000000
 IDLE_UNLOAD_SECONDS = 600
 
@@ -28,8 +29,13 @@ class EngineError(Exception):
 
 
 # ---- locating the engine -----------------------------------------------------
+def exe_name() -> str:
+    """llama-server.exe on Windows, plain llama-server on macOS/other."""
+    return "llama-server.exe" if plat.IS_WIN else "llama-server"
+
+
 def engine_dir() -> Optional[str]:
-    """Folder containing llama-server.exe: bundled (frozen) or packaging/vendor/llama (source)."""
+    """Folder containing llama-server(.exe): bundled (frozen) or packaging/vendor/llama (source)."""
     root = getattr(sys, "_MEIPASS", None)
     cands = []
     if root:
@@ -39,18 +45,29 @@ def engine_dir() -> Optional[str]:
     if getattr(sys, "frozen", False):
         cands.append(os.path.join(os.path.dirname(sys.executable), "llama"))
     for c in cands:
-        if os.path.isfile(os.path.join(c, EXE_NAME)):
+        if os.path.isfile(os.path.join(c, exe_name())):
             return c
     return None
 
 
 def engine_exe() -> Optional[str]:
     d = engine_dir()
-    return os.path.join(d, EXE_NAME) if d else None
+    return os.path.join(d, exe_name()) if d else None
 
 
-MISSING_MSG = ("AI engine not found (llama-server.exe). Run `.\\build.ps1 -FetchEngine` "
-               "or `python tools/fetch_engine.py` once, then reopen this window.")
+def ensure_executable(path: str) -> None:
+    """POSIX: make sure the bundled binary has its +x bit (zip/CI copies can drop it)."""
+    if plat.IS_WIN or not path:
+        return
+    try:
+        if not os.access(path, os.X_OK):
+            os.chmod(path, os.stat(path).st_mode | 0o111)
+    except OSError:
+        pass
+
+
+MISSING_MSG = ("AI engine not found (llama-server). Run `python tools/fetch_engine.py` "
+               "once, then reopen this window.")
 
 
 def log_path() -> str:
@@ -113,6 +130,64 @@ def _assign_to_job(job, proc) -> bool:
         return bool(k32.AssignProcessToJobObject(job, wintypes.HANDLE(int(proc._handle))))
     except Exception:
         return False
+
+
+# ---- POSIX: no job objects, so clean up by pid file + signal handlers --------------
+def pid_path() -> str:
+    return os.path.join(plat.data_dir(), "llama-server.pid")
+
+
+def _write_pid(pid) -> None:
+    try:
+        os.makedirs(os.path.dirname(pid_path()), exist_ok=True)
+        with open(pid_path(), "w") as f:
+            f.write(str(int(pid)))
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _clear_pid() -> None:
+    try:
+        os.remove(pid_path())
+    except OSError:
+        pass
+
+
+def _proc_name(pid: int) -> str:
+    """Executable name of a process via `ps` ('' if gone)."""
+    try:
+        r = subprocess.run(["ps", "-p", str(int(pid)), "-o", "comm="], capture_output=True,
+                           text=True, timeout=5)
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def cleanup_orphan(kill=None, proc_name=None, sleep=time.sleep) -> bool:
+    """Kill a llama-server left over from a previous run that died without cleaning up (POSIX only).
+    Only kills the pid from our pid file, and only if it still looks like a llama-server."""
+    if plat.IS_WIN:
+        return False
+    kill = kill or os.kill
+    proc_name = proc_name or _proc_name
+    try:
+        with open(pid_path()) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        _clear_pid()
+        return False
+    killed = False
+    if pid > 1 and pid != os.getpid() and "llama-server" in os.path.basename(proc_name(pid)):
+        try:
+            kill(pid, signal.SIGTERM)
+            killed = True
+            sleep(0.5)
+            if "llama-server" in os.path.basename(proc_name(pid)):
+                kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except OSError:
+            pass
+    _clear_pid()
+    return killed
 
 
 def free_port() -> int:
@@ -261,6 +336,16 @@ class LocalEngine:
                 pass
 
     # -- command line --
+    def spawn_env(self):
+        """Extra environment for the child so bundled dylibs load (macOS); None = inherit."""
+        if not plat.IS_MAC or not self.exe:
+            return None
+        d = os.path.dirname(self.exe)
+        env = dict(os.environ)
+        old = env.get("DYLD_LIBRARY_PATH")
+        env["DYLD_LIBRARY_PATH"] = d + (os.pathsep + old if old else "")
+        return env
+
     def build_cmd(self, model_path: str, port: int, ngl: int) -> List[str]:
         return [self.exe, "--host", "127.0.0.1", "--port", str(port), "-m", model_path,
                 "-c", "12288", "--jinja", "-ngl", str(ngl), "--no-webui"]
@@ -308,14 +393,22 @@ class LocalEngine:
             self._log_fh = None
         kw = {"stdin": subprocess.DEVNULL, "stdout": self._log_fh or subprocess.DEVNULL,
               "stderr": subprocess.STDOUT, "cwd": os.path.dirname(cmd[0])}
-        if os.name == "nt":
+        if plat.IS_WIN:
             kw["creationflags"] = CREATE_NO_WINDOW
+        else:
+            kw["start_new_session"] = True
+            env = self.spawn_env()
+            if env is not None:
+                kw["env"] = env
+            ensure_executable(cmd[0])
         try:
             self._proc = self._popen(cmd, **kw)
         except OSError as e:
             return False, str(e)
         self.port = port
-        if self._use_job:
+        if not plat.IS_WIN:
+            _write_pid(getattr(self._proc, "pid", 0))
+        if self._use_job and plat.IS_WIN:
             if self._job is None:
                 self._job = _make_kill_on_close_job()
             _assign_to_job(self._job, self._proc)
@@ -333,6 +426,8 @@ class LocalEngine:
         with self._lock:
             self._cancel_idle()
             p, self._proc = self._proc, None
+            if not plat.IS_WIN:
+                _clear_pid()
             self.mode = ""
             self.model_path = ""
             if p is not None and p.poll() is None:
@@ -467,9 +562,31 @@ _engine: Optional[LocalEngine] = None
 def get_engine() -> LocalEngine:
     global _engine
     if _engine is None:
+        if not plat.IS_WIN:
+            try:
+                cleanup_orphan()
+            except Exception:
+                pass
+            _install_signal_handlers()
         _engine = LocalEngine()
         atexit.register(shutdown)
     return _engine
+
+
+def _install_signal_handlers():
+    """SIGTERM/SIGHUP -> stop the server, then fall back to the default action (POSIX, main thread)."""
+    def handler(signum, _frame):
+        shutdown()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, handler)
+        except (ValueError, OSError):      # not in the main thread
+            pass
 
 
 def shutdown():

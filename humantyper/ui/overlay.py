@@ -4,6 +4,8 @@ import sys
 import time
 import tkinter as tk
 
+from .. import plat
+from . import macutil
 from . import theme as T
 from . import winutil
 from .stats import fmt_time
@@ -21,7 +23,14 @@ class StatsOverlay(tk.Toplevel):
         self.cb = dict(start=on_start, pause=on_pause, stop=on_stop, home=on_home,
                        close=on_close, moved=on_moved)
         self.withdraw()
-        self.overrideredirect(True)
+        # macOS: a floating "noActivates" Aqua panel (clicks never activate us); if Tk refuses that
+        # style fall back to overrideredirect. Windows: overrideredirect + WS_EX_NOACTIVATE (_style).
+        self.mac_panel = macutil.make_floating_panel(self) if plat.IS_MAC else False
+        if not self.mac_panel:
+            self.overrideredirect(True)
+        # extra safety net on macOS: remember the last other frontmost app, re-activate it after clicks
+        self.focus_ret = macutil.FocusReturn() if plat.IS_MAC else None
+        self._focus_id = None
         try:
             self.attributes("-alpha", alpha)
             self.attributes("-topmost", True)
@@ -118,6 +127,24 @@ class StatsOverlay(tk.Toplevel):
         fn = self.cb.get(name)
         if fn:
             fn()
+        if name in ("start", "pause", "stop"):
+            self.return_focus()
+
+    # ---- macOS focus return -------------------------------------------
+    def can_return_focus(self):
+        return bool(self.focus_ret and self.focus_ret.available)
+
+    def return_focus(self):
+        """Hand keyboard focus back to the app the user was in before clicking us (macOS only)."""
+        if self.can_return_focus():
+            self.after(30, self.focus_ret.restore)
+
+    def _poll_focus(self):
+        self._focus_id = None
+        if not self.shown or not self.can_return_focus():
+            return
+        self.focus_ret.poll()
+        self._focus_id = self.after(400, self._poll_focus)
 
     # ---- placement / drag ---------------------------------------------
     def _place(self, pos):
@@ -154,12 +181,17 @@ class StatsOverlay(tk.Toplevel):
         self.update_idletasks()
         self._style()
         self._keep_on_top()
+        if self.can_return_focus() and self._focus_id is None:
+            self._poll_focus()
 
     def hide(self):
         self.shown = False
         if self._lift_id:
             self.after_cancel(self._lift_id)
             self._lift_id = None
+        if self._focus_id:
+            self.after_cancel(self._focus_id)
+            self._focus_id = None
         self.withdraw()
 
     def _style(self):
@@ -192,8 +224,10 @@ class StatsOverlay(tk.Toplevel):
         wpm = int(round(d.get("wpm") or 0))
         self.l_time.configure(
             text=f"WPM {wpm:>3}  {fmt_time(d.get('elapsed') or 0)} / ETA {fmt_time(d.get('eta'))}")
+        hint = (plat.IS_MAC and not self.can_return_focus() and state.startswith("T-"))
         self.l_cnt.configure(
-            text=f"CHR {d.get('typed', 0)}/{d.get('total', 0)}  TYPO {d.get('typos', 0)}  "
+            text="click back into your target app" if hint else
+                 f"CHR {d.get('typed', 0)}/{d.get('total', 0)}  TYPO {d.get('typos', 0)}  "
                  f"REV {d.get('revs', '0/?')}")
         active = bool(d.get("active"))
         self.b_start.set_enabled(not active)
@@ -202,9 +236,10 @@ class StatsOverlay(tk.Toplevel):
         self.b_pause.configure(text="[▶ RESUME]" if d.get("paused") else "[‖ PAUSE]")
 
     def destroy(self):
-        if self._lift_id:
-            try:
-                self.after_cancel(self._lift_id)
-            except Exception:
-                pass
+        for aid in (self._lift_id, self._focus_id):
+            if aid:
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
         super().destroy()

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Human Typer</title>
-<meta name="description" content="Human Typer types your text into any app with human-like timing, typos and revisions. Free Windows download.">
+<meta name="description" content="Human Typer types your text into any app with human-like timing, typos and revisions. Free download for Windows and macOS.">
 <link rel="icon" href="favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -93,6 +93,9 @@
   .status .msg { color: var(--cyan); font-weight: 700; }
   .cursor { display: inline-block; width: .6em; background: var(--cyan); animation: blink 1.06s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
+  #alt a { color: var(--violet); text-decoration: none; }
+  #alt a:hover { color: var(--pink); }
+  [hidden] { display: none !important; }
   .note { color: var(--dim); font-size: 12px; margin-top: 14px; }
   .note b { color: var(--text); font-weight: 400; }
   footer { color: var(--dim); font-size: 12px; margin-top: 22px; text-align: center; }
@@ -111,7 +114,7 @@
 <main>
   <h1 class="sr">Human Typer</h1>
   <pre id="banner" aria-hidden="true"></pre>
-  <div class="sub">// human-like keystroke engine :: <span id="ver">windows</span> :: F8 start/stop  F9 pause //</div>
+  <div class="sub">// human-like keystroke engine :: <span id="ver">desktop</span> :: F8 start/stop  F9 pause //</div>
 
   <section class="box" aria-label="Human Typer">
     <span class="title">[ HUMAN TYPER // types like a person ]</span>
@@ -126,12 +129,13 @@
     <div class="dl-wrap">
       <a class="dl" id="dl" href="https://github.com/glumbis/Human-Typer-App/releases/latest">[ &darr; DOWNLOAD FOR WINDOWS ]</a>
       <div class="meta" id="meta">latest installer from GitHub</div>
+      <div class="meta" id="alt" hidden><a id="alt-link" href="https://github.com/glumbis/Human-Typer-App/releases/latest">Intel Mac? download x86_64</a></div>
     </div>
 
     <div class="status" aria-live="polite">
       <span class="pre">STATUS &gt;</span> <span class="msg" id="status">READY — grab the installer</span><span class="cursor">&nbsp;</span>
     </div>
-    <div class="note">Unsigned app: if Windows SmartScreen appears, click <b>More info → Run anyway</b>. No admin rights needed.</div>
+    <div class="note" id="note">Unsigned app: if Windows SmartScreen appears, click <b>More info → Run anyway</b>. No admin rights needed.</div>
   </section>
 
   <footer><a href="https://github.com/glumbis/Human-Typer-App">source on github</a></footer>
@@ -142,21 +146,81 @@
   "use strict";
   var REPO = "glumbis/Human-Typer-App";
 
-  // ---- download button: newest release's Setup installer ------------------------------
+  // ---- download button: pick the newest release asset for this OS ---------------------
   var dl = document.getElementById("dl"), meta = document.getElementById("meta"),
-      status = document.getElementById("status"), ver = document.getElementById("ver");
+      status = document.getElementById("status"), ver = document.getElementById("ver"),
+      alt = document.getElementById("alt"), altLink = document.getElementById("alt-link"),
+      note = document.getElementById("note");
+  var RELEASES = "https://github.com/" + REPO + "/releases/latest";
+  var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
+  var OS = /Android|iPhone|iPad|iPod/i.test(ua) ? "other" : /Win/i.test(ua) ? "windows" : /Mac/i.test(ua) ? "mac" : "other";
+  var arch = "arm64";   // browsers can't reliably say; Apple Silicon is the default, hints below can flip it
+
+  function mb(a) { return (a.size / 1048576).toFixed(1) + " MB"; }
+  function find(assets, re) { return (assets || []).filter(function (x) { return re.test(x.name); })[0]; }
+
+  if (OS === "windows") {
+    dl.innerHTML = "[ &darr; DOWNLOAD FOR WINDOWS ]";
+  } else if (OS === "mac") {
+    dl.innerHTML = "[ &darr; DOWNLOAD FOR MAC ]";
+    status.textContent = "READY — grab the disk image";
+    note.innerHTML = "Unsigned app: on first launch <b>right-click → Open</b>, then grant <b>Accessibility</b> and <b>Input Monitoring</b> in System Settings → Privacy &amp; Security.";
+    meta.textContent = "latest disk image from GitHub";
+    alt.hidden = false;
+    try {
+      var c = document.createElement("canvas").getContext("webgl"), ext = c && c.getExtension("WEBGL_debug_renderer_info");
+      var gpu = ext ? String(c.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : "";
+      if (/Intel|AMD|Radeon/i.test(gpu)) arch = "x86_64"; else if (/Apple M/i.test(gpu)) arch = "arm64";
+    } catch (e) {}
+  } else {
+    dl.innerHTML = "[ &darr; DOWNLOADS ON GITHUB ]";
+    meta.textContent = "Windows installer and macOS disk images";
+  }
+
+  var release = null;
+  function applyMac() {
+    if (!release) return;
+    var arm = find(release.assets, /mac-arm64\.dmg$/i), x64 = find(release.assets, /mac-x86_64\.dmg$/i);
+    var main = arch === "x86_64" ? x64 : arm, other = arch === "x86_64" ? arm : x64;
+    ver.textContent = release.tag_name;
+    if (!main) {   // CI may still be building the dmg
+      dl.href = RELEASES;
+      meta.textContent = "mac build in progress, see the releases page";
+      status.textContent = "mac build in progress";
+      alt.hidden = true;
+      return;
+    }
+    dl.href = main.browser_download_url;
+    meta.textContent = main.name + "  ·  " + mb(main) + "  ·  macOS 11+";
+    altLink.textContent = arch === "x86_64" ? "Apple Silicon Mac? download arm64" : "Intel Mac? download x86_64";
+    if (other) { altLink.href = other.browser_download_url; } else { altLink.href = RELEASES; }
+  }
   fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (rel) {
-      var a = (rel.assets || []).filter(function (x) { return /setup.*\.exe$/i.test(x.name); })[0];
-      if (!a) return;
-      dl.href = a.browser_download_url;
-      var mb = (a.size / 1048576).toFixed(1);
-      meta.textContent = a.name + "  ·  " + mb + " MB  ·  Windows 10/11";
-      ver.textContent = rel.tag_name;
+      release = rel;
+      if (OS === "windows") {
+        var a = find(rel.assets, /setup.*\.exe$/i);
+        if (!a) return;
+        dl.href = a.browser_download_url;
+        meta.textContent = a.name + "  ·  " + mb(a) + "  ·  Windows 10/11";
+        ver.textContent = rel.tag_name;
+      } else if (OS === "mac") {
+        applyMac();
+        // refine Apple Silicon vs Intel where the browser exposes it (Chromium)
+        if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+          navigator.userAgentData.getHighEntropyValues(["architecture"]).then(function (h) {
+            if (h && h.architecture === "arm") arch = "arm64"; else if (h && h.architecture === "x86") arch = "x86_64";
+            applyMac();
+          }).catch(function () {});
+        }
+      } else { ver.textContent = rel.tag_name; }
     })
     .catch(function () { /* keep the releases-page fallback link */ });
-  dl.addEventListener("click", function () { status.textContent = "DOWNLOADING — run the installer when it finishes"; });
+  dl.addEventListener("click", function () {
+    status.textContent = OS === "mac" ? "DOWNLOADING — open the dmg and drag Human Typer to Applications"
+                                       : "DOWNLOADING — run the installer when it finishes";
+  });
 
   // ---- banner (same ANSI-Shadow letters and nebula gradient as the app) ----------------
   var FIG = {

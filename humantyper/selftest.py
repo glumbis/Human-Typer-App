@@ -3,6 +3,17 @@ import os
 import sys
 import traceback
 
+from . import plat
+
+
+def checks(core, uia, uia_gen, pyobjc, ax_locator, pyn, ctk, pil, ai_engine, ai_models):
+    """Ordered (name, fn) list; macOS swaps the UIA checks for pyobjc/AX ones."""
+    os_checks = ([("pyobjc", pyobjc), ("ax locator", ax_locator)] if plat.IS_MAC
+                 else [("uia locator", uia), ("uia gen module", uia_gen)])
+    return ([("core imports", core)] + os_checks +
+            [("pynput", pyn), ("customtkinter+icon", ctk), ("pillow", pil),
+             ("ai engine", ai_engine), ("ai models", ai_models)])
+
 
 def run(report_path=None) -> int:
     lines, ok = [], True
@@ -40,10 +51,23 @@ def run(report_path=None) -> int:
         Controller()
         return "Controller created"
 
+    def pyobjc():
+        import AppKit  # noqa
+        import Quartz  # noqa
+        return "AppKit + Quartz import ok"
+
+    def ax_locator():
+        from humantyper import backends
+        from humantyper.ui import macutil
+        be = backends.PynputBackend()
+        loc = getattr(be, "locator", None)
+        name = "None (no Accessibility permission yet - ok)" if loc is None else type(loc).__name__
+        return f"locator={name}, trusted={macutil.ax_trusted()}"
+
     def ctk():
         import customtkinter
         from humantyper.ui import theme as T
-        p = T.resource_path(os.path.join("assets", "icon.ico"))
+        p = T.resource_path(os.path.join("assets", "icon.png" if plat.IS_MAC else "icon.ico"))
         if not os.path.isfile(p):
             raise FileNotFoundError(p)
         return f"customtkinter {customtkinter.__version__}, icon {p}"
@@ -57,9 +81,15 @@ def run(report_path=None) -> int:
         from humantyper.ai import engine as E
         exe = E.engine_exe()
         if not exe:
-            raise FileNotFoundError("llama-server.exe not bundled: " + E.MISSING_MSG)
+            raise FileNotFoundError(f"{E.exe_name()} not bundled: " + E.MISSING_MSG)
+        E.ensure_executable(exe)
+        kw = {}
+        if plat.IS_WIN:
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            kw["env"] = E.LocalEngine(exe=exe).spawn_env()
         r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=60,
-                           cwd=os.path.dirname(exe), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                           cwd=os.path.dirname(exe), **kw)
         out = ((r.stdout or "") + (r.stderr or "")).strip().splitlines()
         if r.returncode != 0 or not out:
             raise RuntimeError(f"llama-server --version failed rc={r.returncode}: {out[:3]}")
@@ -71,9 +101,7 @@ def run(report_path=None) -> int:
         found = M.discover()
         return f"{len(found)} model(s) found, catalog {len(M.CATALOG)} entries"
 
-    for n, f in [("core imports", core), ("uia locator", uia), ("uia gen module", uia_gen),
-                 ("pynput", pyn), ("customtkinter+icon", ctk), ("pillow", pil),
-                 ("ai engine", ai_engine), ("ai models", ai_models)]:
+    for n, f in checks(core, uia, uia_gen, pyobjc, ax_locator, pyn, ctk, pil, ai_engine, ai_models):
         step(n, f)
     lines.append("RESULT " + ("PASS" if ok else "FAIL"))
     text = "\n".join(lines) + "\n"
