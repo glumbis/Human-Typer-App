@@ -12,6 +12,7 @@ import urllib.request
 from typing import Callable, Iterator, List, Optional
 
 from . import settings as ai_settings
+from .. import plat
 
 EXE_NAME = "llama-server.exe"
 CREATE_NO_WINDOW = 0x08000000
@@ -53,8 +54,7 @@ MISSING_MSG = ("AI engine not found (llama-server.exe). Run `.\\build.ps1 -Fetch
 
 
 def log_path() -> str:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "HumanTyper", "llama-server.log")
+    return os.path.join(plat.data_dir(), "llama-server.log")
 
 
 # ---- Windows job object: child dies with the app -----------------------------

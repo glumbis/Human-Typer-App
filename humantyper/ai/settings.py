@@ -1,6 +1,7 @@
 """Tiny JSON store for AI settings (%APPDATA%\\HumanTyper\\ai.json)."""
 import json
 import os
+from .. import plat
 
 DEFAULTS = {
     "force_cpu": False,     # set automatically after a failed GPU (Vulkan) start
@@ -12,8 +13,7 @@ DEFAULTS = {
 
 
 def path() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "HumanTyper", "ai.json")
+    return os.path.join(plat.config_dir(), "ai.json")
 
 
 def load(p: str = None) -> dict:

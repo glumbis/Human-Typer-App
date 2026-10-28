@@ -7,13 +7,13 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, List, Optional
+from .. import plat
 
 HF_BASE = "https://huggingface.co"
 
 
 def app_models_dir() -> str:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "HumanTyper", "models")
+    return os.path.join(plat.data_dir(), "models")
 
 
 def default_search_dirs() -> List[str]:

@@ -1,6 +1,7 @@
 """Persist GUI settings as JSON in %APPDATA%\\HumanTyper."""
 import json
 import os
+from . import plat
 
 DEFAULTS = {
     "wpm": 60,
@@ -17,8 +18,7 @@ DEFAULTS = {
 
 
 def config_path() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "HumanTyper", "settings.json")
+    return os.path.join(plat.config_dir(), "settings.json")
 
 
 def load(path: str = None) -> dict:
