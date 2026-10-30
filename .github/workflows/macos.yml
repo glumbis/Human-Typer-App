@@ -46,6 +46,18 @@ jobs:
         run: bash build_mac.sh
       - name: Launch check (app must start and survive a UI smoke run without permissions)
         run: bash tools/mac_launch_check.sh dist/HumanTyper.app 30
+      # Grants the app Accessibility / Input Monitoring (TCC), then presses F8, fn+F8, fn+F9 as real key
+      # events and clicks the overlay / main-window buttons; the text must arrive in TextEdit.
+      # A failure here stops the dmg from being uploaded or attached to the release.
+      - name: End-to-end test (the built app really types into TextEdit)
+        timeout-minutes: 15
+        run: bash tools/mac_e2e.sh dist/HumanTyper.app open
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-${{ matrix.arch }}
+          path: e2e-out
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()
         with:

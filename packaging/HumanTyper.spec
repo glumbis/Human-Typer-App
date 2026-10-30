@@ -80,6 +80,8 @@ if IS_MAC:
                      "CFBundleShortVersionString": VERSION,
                      "CFBundleVersion": VERSION,
                      "NSHighResolutionCapable": True,
+                     # no App Nap: hidden behind the target app, timers/typing must not be throttled
+                     "NSAppSleepDisabled": True,
                      "LSMinimumSystemVersion": "11.0",
                      "NSAppleEventsUsageDescription":
                          "Human Typer sends keystrokes to the app you are typing into.",

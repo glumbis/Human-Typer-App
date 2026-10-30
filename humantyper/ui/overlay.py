@@ -1,5 +1,6 @@
-"""Always-on-top mini stats window. Borderless, non-activating (never steals focus from the target
-app), draggable by its title strip."""
+"""Always-on-top mini stats window, borderless and draggable by its title strip. Windows: never
+activates (WS_EX_NOACTIVATE). macOS: FocusReturn gives the keyboard focus back to the app the user
+was typing in after a click on the overlay."""
 import sys
 import time
 import tkinter as tk
@@ -18,16 +19,17 @@ STATE_COLORS = {"READY": T.ICE, "TYPING": T.CYAN, "REVISING": T.VIOLET, "PAUSED"
 
 class StatsOverlay(tk.Toplevel):
     def __init__(self, master, pos=None, on_start=None, on_pause=None, on_stop=None,
-                 on_home=None, on_close=None, on_moved=None, alpha=0.95):
+                 on_home=None, on_close=None, on_moved=None, on_press=None, on_release=None,
+                 alpha=0.95):
         super().__init__(master, bg=T.LINE)
         self.cb = dict(start=on_start, pause=on_pause, stop=on_stop, home=on_home,
-                       close=on_close, moved=on_moved)
+                       close=on_close, moved=on_moved, press=on_press, release=on_release)
         self.withdraw()
-        # macOS: a floating "noActivates" Aqua panel (clicks never activate us); if Tk refuses that
-        # style fall back to overrideredirect. Windows: overrideredirect + WS_EX_NOACTIVATE (_style).
-        self.mac_panel = macutil.make_floating_panel(self) if plat.IS_MAC else False
-        if not self.mac_panel:
-            self.overrideredirect(True)
+        # Borderless everywhere. Windows: overrideredirect + WS_EX_NOACTIVATE (_style). macOS: plain
+        # overrideredirect + -topmost. NOT a MacWindowStyle "floating" panel: Tk on Aqua drops every
+        # click on such a panel while another app is active, with or without noActivates, so the
+        # buttons did nothing in v1.4.3 (proven by tools/mac_e2e.sh, which clicks them for real).
+        self.overrideredirect(True)
         # extra safety net on macOS: remember the last other frontmost app, re-activate it after clicks
         self.focus_ret = macutil.FocusReturn() if plat.IS_MAC else None
         self._focus_id = None
@@ -37,6 +39,7 @@ class StatsOverlay(tk.Toplevel):
         except tk.TclError:
             pass
         self.shown = False
+        self._fired = None
         self.exstyle = 0
         self._flash = ("", 0.0)
         self._drag = None
@@ -44,6 +47,12 @@ class StatsOverlay(tk.Toplevel):
         self._build()
         self.geometry(self._place(pos))
         self.bind("<Map>", lambda e: self.after_idle(self._style))
+        if plat.IS_MAC:
+            # A click on the overlay activates this app for a moment (macOS), so keys typed meanwhile
+            # would be lost: tell the app on mouse-down (it holds the typing) and after the click
+            # (bindings on the toplevel run after the button's own <ButtonRelease-1> handler).
+            self.bind("<ButtonPress-1>", lambda e: self._fire("press"), add="+")
+            self.bind("<ButtonRelease-1>", self._on_release, add="+")
 
     # ---- layout --------------------------------------------------------
     def _build(self):
@@ -124,20 +133,33 @@ class StatsOverlay(tk.Toplevel):
             c.create_rectangle(i * seg + 1, 2, (i + 1) * seg - 1, h - 2, width=0, fill=fill)
 
     def _fire(self, name):
+        if name not in ("press", "release"):
+            self._fired = name
         fn = self.cb.get(name)
         if fn:
             fn()
         if name in ("start", "pause", "stop"):
             self.return_focus()
 
+    def _on_release(self, _e=None):
+        """macOS: end of any click on the overlay. A drag or a click on the stats gives the focus back
+        too ([⌂] deliberately does not); then the app may resume typing held by the mouse-down."""
+        fired, self._fired = self._fired, None
+        if fired in (None, "moved"):
+            self.return_focus()
+        self._fire("release")
+
     # ---- macOS focus return -------------------------------------------
     def can_return_focus(self):
         return bool(self.focus_ret and self.focus_ret.available)
 
     def return_focus(self):
-        """Hand keyboard focus back to the app the user was in before clicking us (macOS only)."""
+        """Hand keyboard focus back to the app the user was in before clicking us (macOS only).
+        Tried a few times: the click's own activation of this app may land after the first try
+        (restore() is a no-op while another app is in front)."""
         if self.can_return_focus():
-            self.after(30, self.focus_ret.restore)
+            for ms in (30, 150, 400, 800):
+                self.after(ms, self.focus_ret.restore)
 
     def _poll_focus(self):
         self._focus_id = None
@@ -225,8 +247,10 @@ class StatsOverlay(tk.Toplevel):
         self.l_time.configure(
             text=f"WPM {wpm:>3}  {fmt_time(d.get('elapsed') or 0)} / ETA {fmt_time(d.get('eta'))}")
         hint = (plat.IS_MAC and not self.can_return_focus() and state.startswith("T-"))
+        hk_off = plat.IS_MAC and d.get("hotkeys") is False and state == "READY"
         self.l_cnt.configure(
             text="click back into your target app" if hint else
+                 "fn+F8 OFF: allow Input Monitoring" if hk_off else
                  f"CHR {d.get('typed', 0)}/{d.get('total', 0)}  TYPO {d.get('typos', 0)}  "
                  f"REV {d.get('revs', '0/?')}")
         active = bool(d.get("active"))

@@ -19,6 +19,14 @@ def has_astral(text: str) -> bool:
     return any(ord(c) > 0xFFFF for c in text)
 
 
+def range_tuple(rng) -> Tuple[int, int]:
+    """(location, length) of a CFRange as pyobjc hands it out: a plain (loc, len) tuple (current
+    pyobjc; v1.4.3 read .location from it, so the AX locator never worked) or a CFRange struct."""
+    if isinstance(rng, tuple):
+        return int(rng[0]), int(rng[1])
+    return int(rng.location), int(rng.length)
+
+
 class AxUnavailable(Exception):
     pass
 
@@ -72,7 +80,7 @@ class RealAx:
         ok, rng = self.AS.AXValueGetValue(v, self.AS.kAXValueCFRangeType, None)
         if not ok:
             return None
-        return int(rng.location), int(rng.length)
+        return range_tuple(rng)
 
     def set_caret(self, el, loc: int) -> bool:
         v = self.AS.AXValueCreate(self.AS.kAXValueCFRangeType, self.CF.CFRangeMake(loc, 0))

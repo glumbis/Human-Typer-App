@@ -20,6 +20,13 @@ chmod +x "$APP"/Contents/Frameworks/llama/llama-server 2>/dev/null || true
 # Ad-hoc signature: required for the app to launch on Apple Silicon. Not a Developer ID signature,
 # so Gatekeeper still asks on first launch (see README).
 codesign --force --deep --sign - "$APP"
+# Re-sign the outer bundle with an explicit designated requirement "identifier <bundle id>". An ad-hoc
+# signature's implicit requirement is its cdhash, which changes with every build, so macOS silently
+# stopped honouring the Accessibility / Input Monitoring switches after each update (still shown ON
+# in System Settings). With this requirement the grants keep working for new versions.
+BUNDLE_ID="$(defaults read "$PWD/$APP/Contents/Info" CFBundleIdentifier)"
+codesign --force --sign - --requirements "=designated => identifier \"$BUNDLE_ID\"" "$APP"
+codesign -d -r- "$APP" 2>&1 | grep designated
 codesign --verify --deep --verbose=2 "$APP" || true
 
 # Selftest inside the bundle (no GUI, no typing): exit 0 = PASS

@@ -364,3 +364,225 @@ def test_global_hotkeys_mac_uses_event_tap_not_pynput(monkeypatch):
     g = hk.GlobalHotkeys(lambda: None, lambda: None)
     g.start()
     assert g.ok and isinstance(started[0], hk.MacEventTap)
+
+
+# ---------------- event tap fallback / retry ----------------
+class FakeQuartzModes(FakeQuartz):
+    kCGEventTapOptionListenOnly = 1
+
+    def __init__(self, allowed=("active", "listen")):
+        super().__init__()
+        self.allowed = set(allowed)
+        self.tried = []
+
+    def CGEventTapCreate(self, where, place, opts, mask, cb, refcon):
+        mode = "active" if opts == self.kCGEventTapOptionDefault else "listen"
+        self.tried.append(mode)
+        self.created = (where, place, opts, mask, cb)
+        return "TAP" if mode in self.allowed else None
+
+
+@pytest.mark.parametrize("allowed,mode,tried", [
+    (("active", "listen"), "active", ["active"]),
+    (("listen",), "listen", ["active", "listen"]),     # only Input Monitoring: listen-only tap
+])
+def test_mac_event_tap_falls_back_to_listen_only(allowed, mode, tried):
+    q = FakeQuartzModes(allowed)
+    tap = hk.MacEventTap(lambda t, e: True, quartz=q)
+    tap.start()
+    assert tap.mode == mode and q.tried == tried
+    tap.stop()
+
+
+def test_mac_event_tap_no_permission_at_all():
+    q = FakeQuartzModes(())
+    tap = hk.MacEventTap(lambda t, e: True, quartz=q)
+    with pytest.raises(RuntimeError, match="Input Monitoring"):
+        tap.start()
+    assert q.tried == ["active", "listen"] and tap.mode is None
+
+
+class _FakeTap:
+    """Stands in for MacEventTap; FakeTap.allowed decides what start() can create."""
+    allowed = ()
+    made = []
+
+    def __init__(self, handler, quartz=None):
+        self.mode, self.stopped = None, False
+        _FakeTap.made.append(self)
+
+    def start(self, timeout=3.0):
+        if not _FakeTap.allowed:
+            raise RuntimeError("no permission")
+        self.mode = _FakeTap.allowed[0]
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def fake_tap(monkeypatch):
+    monkeypatch.setattr(hk.plat, "IS_MAC", True)
+    monkeypatch.setattr(hk, "MacEventTap", _FakeTap)
+    _FakeTap.allowed, _FakeTap.made = (), []
+    return _FakeTap
+
+
+def test_hotkeys_retry_until_permission_granted(fake_tap):
+    g = hk.GlobalHotkeys(lambda: None, lambda: None)
+    with pytest.raises(RuntimeError):
+        g.start()
+    assert not g.ok and g.mode is None
+    assert g.retry() is False and g.mode is None           # still no permission
+    fake_tap.allowed = ("active",)                          # user grants it: no restart needed
+    assert g.retry() is True and g.ok and g.mode == "active"
+    n = len(fake_tap.made)
+    assert g.retry() is True and len(fake_tap.made) == n    # running: nothing recreated
+
+
+def test_hotkeys_upgrade_listen_to_active(fake_tap):
+    fake_tap.allowed = ("listen",)
+    g = hk.GlobalHotkeys(lambda: None, lambda: None)
+    g.start()
+    first = g._listener
+    assert g.mode == "listen"
+    assert g.retry(upgrade=True) and g._listener is first and g.mode == "listen"   # no better yet
+    assert fake_tap.made[-1].stopped and not first.stopped
+    fake_tap.allowed = ()
+    assert g.retry(upgrade=True) and g._listener is first and g.ok                 # failure keeps it
+    fake_tap.allowed = ("active",)
+    assert g.retry(upgrade=True) and g.mode == "active" and first.stopped
+
+
+def test_hotkeys_stop_marks_off(fake_tap):
+    fake_tap.allowed = ("active",)
+    g = hk.GlobalHotkeys(lambda: None, lambda: None)
+    g.start()
+    g.stop()
+    assert not g.ok and g.mode is None
+
+
+def test_windows_mode_is_hook():
+    g = hk.GlobalHotkeys(lambda: None, lambda: None)
+    g.ok, g._listener = True, object()
+    assert g.mode == "hook"
+
+
+def test_mac_fn_f8_flags_do_not_matter():
+    """fn+F8 arrives as keycode 100 with the SecondaryFn flag; mac_handle only looks at the keycode."""
+    calls = []
+    held = set()
+    cbs = {hk.MAC_KC_F8: lambda: calls.append(8)}
+    assert hk.mac_handle(held, cbs, hk.MAC_KEYDOWN, 100, 0, 999, 1) is True and calls == [8]
+
+
+# ---------------- Quartz keystroke backend ----------------
+from humantyper import backends as B
+
+
+class FakeQ:
+    kCGEventSourceStateHIDSystemState, kCGHIDEventTap = 1, 0
+
+    def __init__(self):
+        self.posted = []
+
+    def CGEventSourceCreate(self, state):
+        return "SRC"
+
+    def CGEventCreateKeyboardEvent(self, src, kc, down):
+        return {"kc": kc, "down": down, "flags": None, "text": None, "src": src}
+
+    def CGEventKeyboardSetUnicodeString(self, ev, n, text):
+        ev["text"], ev["n"] = text, n
+
+    def CGEventSetFlags(self, ev, flags):
+        ev["flags"] = flags
+
+    def CGEventPost(self, tap, ev):
+        self.posted.append(ev)
+
+
+def _qb():
+    q = FakeQ()
+    return B.QuartzBackend(quartz=q, sleep=lambda s: None), q
+
+
+def _plain(flags):
+    return flags & ~B.MAC_FLAG_NONCOALESCED
+
+
+def test_quartz_type_char_unicode():
+    b, q = _qb()
+    for ch in "aÅ€😀":
+        b.type_char(ch)
+    downs = [e for e in q.posted if e["down"]]
+    assert [e["text"] for e in downs] == list("aÅ€😀")
+    assert [e["n"] for e in downs] == [1, 1, 1, 2]           # UTF-16 length (emoji = surrogate pair)
+    assert all(_plain(e["flags"]) == 0 for e in q.posted)    # no modifiers leak into text
+    assert len(q.posted) == 8 and all(e["src"] == "SRC" for e in q.posted)
+
+
+@pytest.mark.parametrize("meth,kc", [("press_enter", 36), ("press_tab", 48), ("backspace", 51),
+                                     ("left", 123), ("right", 124)])
+def test_quartz_special_keys(meth, kc):
+    b, q = _qb()
+    getattr(b, meth)()
+    assert [(e["kc"], e["down"], _plain(e["flags"])) for e in q.posted] == [(kc, True, 0), (kc, False, 0)]
+
+
+def test_quartz_newline_and_tab_via_type_char():
+    b, q = _qb()
+    b.type_char("\n")
+    b.type_char("\t")
+    assert [e["kc"] for e in q.posted] == [36, 36, 48, 48] and all(e["text"] is None for e in q.posted)
+
+
+SHIFT, ALT, CMD = B.MAC_FLAG["shift"], B.MAC_FLAG["alt"], B.MAC_FLAG["cmd"]
+
+
+@pytest.mark.parametrize("meth,mods,kc,flags", [
+    ("shift_left", [56], 123, SHIFT),
+    ("ctrl_left", [58], 123, ALT),                     # Option+Left = word jump on a Mac
+    ("ctrl_shift_left", [58, 56], 123, ALT | SHIFT),
+    ("select_to_start", [55, 56], 126, CMD | SHIFT),   # Cmd+Shift+Up
+    ("copy", [55], 8, CMD),                            # Cmd+C
+])
+def test_quartz_combos_set_flags_and_release(meth, mods, kc, flags):
+    b, q = _qb()
+    getattr(b, meth)()
+    ev = [(e["kc"], e["down"], _plain(e["flags"])) for e in q.posted]
+    n = len(mods)
+    assert [k for k, d, _ in ev[:n]] == mods and all(d for _, d, _ in ev[:n])     # modifiers down
+    assert ev[n:n + 2] == [(kc, True, flags), (kc, False, flags)]               # key with all flags
+    ups = ev[n + 2:]
+    assert [k for k, _, _ in ups] == list(reversed(mods)) and not any(d for _, d, _ in ups)
+    assert ups[-1][2] == 0                                                      # nothing sticks
+
+
+def test_quartz_combo_releases_modifiers_on_error():
+    b, q = _qb()
+    orig = b._key
+
+    def boom(*a, **k):
+        raise RuntimeError("post failed")
+    b._key = boom
+    with pytest.raises(RuntimeError):
+        b.copy()
+    assert q.posted[-1]["kc"] == 55 and q.posted[-1]["down"] is False and _plain(q.posted[-1]["flags"]) == 0
+    b._key = orig
+
+
+def test_make_backend_per_os(monkeypatch):
+    made = []
+    monkeypatch.setattr(B, "QuartzBackend", lambda: made.append("q") or "Q")
+    monkeypatch.setattr(B, "PynputBackend", lambda: made.append("p") or "P")
+    monkeypatch.setattr(B.plat, "IS_MAC", True)
+    assert B.make_backend() == "Q"
+    monkeypatch.setattr(B.plat, "IS_MAC", False)
+    assert B.make_backend() == "P"
+
+
+def test_ax_range_tuple_accepts_pyobjc_tuple_and_struct():
+    from humantyper.locator_mac import range_tuple
+    assert range_tuple((53, 0)) == (53, 0)                  # what pyobjc really returns (CI probe)
+    assert range_tuple(types.SimpleNamespace(location=7, length=2)) == (7, 2)

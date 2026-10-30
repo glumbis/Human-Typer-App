@@ -9,7 +9,7 @@ import customtkinter as ctk
 from . import __version__
 from . import config
 from . import plat
-from .backends import PynputBackend
+from .backends import make_backend
 from .engine import Settings, TypingEngine
 from .hotkeys import GlobalHotkeys
 from .parser import parse
@@ -72,6 +72,8 @@ class HumanTyperApp(ctk.CTk):
         self._face_p = 0.0
         self._status_text = ""
         self._minimized = False
+        self._click_hold = None     # engine held by a mouse-down on the overlay (macOS)
+        self._hold_kept = False
 
         self._build()
         self._fit_to_screen()
@@ -82,20 +84,27 @@ class HumanTyperApp(ctk.CTk):
         self._set_status(READY)
         self._perm_banner = None
         self._perm_dismissed = False
+        self._setup = None
         self._hotkeys_failed = False
         if plat.IS_MAC:
             self._check_permissions(prompt=True)
 
         self.hotkeys = GlobalHotkeys(lambda: self.events.put(("hotkey", "f8")),
                                      lambda: self.events.put(("hotkey", "f9")))
+        self._hk_mode = None
+        self._hk_upgrade_tried = False
         try:
             self.hotkeys.start()
         except Exception as e:  # pragma: no cover
             self._set_status(f"Hotkeys unavailable: {e}", T.ERR)
             if plat.IS_MAC:
                 self._hotkeys_failed = True
-                self._log("hotkeys unavailable: " + macutil.INPUT_MON_TEXT, "err")
+                self._log("hotkeys OFF: " + macutil.INPUT_MON_TEXT, "err")
                 self._show_perm_banner(macutil.INPUT_MON_TEXT, macutil.PANE_INPUT_MONITORING)
+        self._hotkeys_changed(log=False)
+        if plat.IS_MAC:
+            self._app_nap = macutil.disable_app_nap()     # keep timers + typing thread at full speed
+            self.after(3000, self._hotkey_retry)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(40, self._poll)
@@ -116,32 +125,117 @@ class HumanTyperApp(ctk.CTk):
 
     # ---- macOS permissions -------------------------------------------
     def _check_permissions(self, prompt=False):
-        """Accessibility is needed to type; Input Monitoring for F8/F9. Shows a banner if missing."""
-        trusted = macutil.ax_trusted()
-        if trusted is False:
+        """Accessibility is needed to type; Input Monitoring for F8/F9. If one is missing: banner +
+        the guided SETUP window (first launch, or whenever macOS reports a permission missing)."""
+        status = macutil.permission_status()
+        if status.get("accessibility") is False:
             self._log("macOS: Accessibility permission missing - typing will not work until it is "
                       "granted (System Settings > Privacy & Security > Accessibility)", "err")
             if prompt:
                 macutil.ax_trusted(prompt=True)          # ask the system to show its own prompt once
+        if any(v is False for v in status.values()):
             self._show_perm_banner(macutil.PERM_TEXT, macutil.PANE_ACCESSIBILITY)
+            self.after(700, self.open_setup)
             self.after(3000, self._recheck_permissions)
+
+    def open_setup(self):
+        """Open (or raise) the guided permission SETUP window (macOS)."""
+        if not plat.IS_MAC:
+            return
+        try:
+            if self._setup is not None and self._setup.winfo_exists():
+                self._setup.deiconify()
+                self._setup.lift()
+                return
+        except tk.TclError:
+            pass
+        from .ui.setup_window import SetupWindow
+
+        def retry():
+            self._hotkey_retry(reschedule=False)
+
+        def closed():
+            self._setup = None
+            if self._perm_banner is not None and macutil.ax_trusted() is not False and self.hotkeys.ok:
+                self._perm_banner.hide()
+        try:
+            self._setup = SetupWindow(self, lambda: self.hotkeys.ok, retry, self._relaunch, on_closed=closed)
+        except Exception as e:
+            self._setup = None
+            self._log(f"setup window failed: {e}", "err")
+
+    def _relaunch(self):
+        """[ RESTART HUMAN TYPER ]: start a fresh copy (macOS re-reads the permissions), quit this one."""
+        import subprocess
+        import sys
+        try:
+            subprocess.Popen(macutil.relaunch_command(sys.executable, sys.argv, getattr(sys, "frozen", False)))
+        except Exception as e:
+            self._log(f"restart failed: {e}", "err")
+            return
+        self.after(300, self._on_close)
 
     def _recheck_permissions(self):
         if self._perm_banner is None or not self._perm_banner.shown():
             return
+        if macutil.ax_trusted() and not self.hotkeys.ok:
+            self._hotkey_retry(reschedule=False)          # granted just now: switch hotkeys on at once
         if macutil.ax_trusted() is not False and not self._hotkeys_failed:
             self._perm_banner.hide()
             self._log("macOS: Accessibility permission granted", "ok")
         else:
             self.after(3000, self._recheck_permissions)
 
+    # ---- hotkeys on/off (macOS: retried until the permission is granted) -----
+    def _hotkey_retry(self, reschedule=True):
+        """macOS: the event tap can only be created once Accessibility or Input Monitoring is granted.
+        Try again every 3 s (and right away when the permission banner sees the grant), so hotkeys
+        start working without restarting the app; also upgrade a listen-only tap to an active one."""
+        hk = self.hotkeys
+        try:
+            if not hk.ok:
+                hk.retry()
+            elif hk.mode == "listen" and not self._hk_upgrade_tried and macutil.ax_trusted():
+                self._hk_upgrade_tried = True
+                hk.retry(upgrade=True)
+        except Exception:
+            pass
+        self._hotkeys_changed()
+        if reschedule:
+            self.after(3000, self._hotkey_retry)
+
+    def _hotkeys_changed(self, log=True):
+        """Refresh the HOTKEYS ON/OFF indicator; log and clear the error when they came on."""
+        mode = self.hotkeys.mode
+        if mode == self._hk_mode and log:
+            return
+        was, self._hk_mode = self._hk_mode, mode
+        on = mode is not None
+        self.hk_lbl.configure(text=f"HOTKEYS: {'ON' if on else 'OFF'}" +
+                              (" (needs permission)" if not on and plat.IS_MAC else ""),
+                              fg=T.CYAN if on else T.ERR)
+        self._ov_dirty = True
+        if not log:
+            return
+        if on:
+            self._log(f"hotkeys ON ({HK_START} / {HK_PAUSE})" + (" - listen-only" if mode == "listen" else ""), "ok")
+            if self._hotkeys_failed:
+                self._hotkeys_failed = False
+                if self.st == "idle":
+                    self._set_status(READY)
+                if self._perm_banner is not None and macutil.ax_trusted() is not False:
+                    self._perm_banner.hide()
+        elif was is not None:
+            self._log("hotkeys OFF", "err")
+
     def _show_perm_banner(self, text, pane):
         if self._perm_dismissed:
             return
         try:
             if self._perm_banner is None:
-                self._perm_banner = PermBanner(self, text, lambda: macutil.open_settings(self._perm_pane),
-                                               on_dismiss=lambda: setattr(self, "_perm_dismissed", True))
+                self._perm_banner = PermBanner(self, text, self.open_setup,
+                                               on_dismiss=lambda: setattr(self, "_perm_dismissed", True),
+                                               open_text="[ OPEN SETUP ]")
             self._perm_pane = pane
             self._perm_banner.set_text(text)
             self._perm_banner.show()
@@ -180,6 +274,9 @@ class HumanTyperApp(ctk.CTk):
         self.sub_lbl = GLabel(cv, f"// human-like keystroke engine  ::  v{__version__}  ::  "
                                   f"{HK_START} start/stop  {HK_PAUSE} pause //", f9, T.DIM)
         self.sub_lbl.moveto(14, sub_y)
+        self.hk_lbl = GLabel(cv, "HOTKEYS: --", f9, T.DIM)
+        # macOS: reopen the permission SETUP window any time
+        self.setup_btn = GButton(cv, "[ SETUP ]", self.open_setup, fnt=f9, color=T.PINK) if plat.IS_MAC else None
         self._sub_y = sub_y
         self.rowconfigure(0, minsize=int(sub_y + f9.metrics("linespace") + 8))
         self.ai_top_btn = GButton(cv, "[ ✦ AI WRITE ]", self._open_ai, fnt=T.font(10, True), color=T.PINK)
@@ -387,6 +484,13 @@ class HumanTyperApp(ctk.CTk):
         sb = cv.bbox(self.sub_lbl.tag)
         if sb:
             trects.append(sb)
+            self.hk_lbl.moveto(sb[2] + 12, sb[1])
+            hb = self.hk_lbl.bbox()
+            if hb:
+                trects.append(hb)
+                if self.setup_btn is not None:
+                    self.setup_btn.moveto(hb[2] + 10, hb[1])
+                    trects.append(self.setup_btn.bbox() or hb)
         wdg = self.inp_panel
         opaque = [(wdg.winfo_x(), wdg.winfo_y(), wdg.winfo_x() + wdg.winfo_width(),
                    wdg.winfo_y() + wdg.winfo_height())]
@@ -465,8 +569,9 @@ class HumanTyperApp(ctk.CTk):
     def _build_overlay(self):
         pos = (self.cfg.get("overlay_x"), self.cfg.get("overlay_y"))
         self.overlay = StatsOverlay(
-            self, pos=pos, on_start=self._overlay_start, on_pause=self._toggle_pause, on_stop=self._stop,
-            on_home=self._raise_main, on_close=lambda: self._set_overlay(False), on_moved=self._save_cfg)
+            self, pos=pos, on_start=self._overlay_start, on_pause=self._overlay_pause, on_stop=self._stop,
+            on_home=self._raise_main, on_close=lambda: self._set_overlay(False), on_moved=self._save_cfg,
+            on_press=self._overlay_press, on_release=self._overlay_release)
         if self.cfg.get("overlay", True):
             self.overlay.show()
 
@@ -488,18 +593,82 @@ class HumanTyperApp(ctk.CTk):
             pass
 
     def _overlay_start(self):
-        """Overlay START. Windows: focus stays in the target app, a short delay suffices. macOS: the
-        overlay re-activates the target app after the click, so wait a little longer; without that
-        (no pyobjc) fall back to the 3 second countdown so the user can click back into the app."""
+        """Overlay START. Windows: focus stays in the target app, a short delay suffices. macOS: a click
+        on the overlay can move the focus away from the target app for a moment (FocusReturn hands it
+        back), so typing starts once another app is frontmost again. Without pyobjc fall back to the
+        3 second countdown so the user can click back into the app."""
         if self.st != "idle":
             return
         if plat.IS_MAC:
             if self.overlay is not None and self.overlay.can_return_focus():
-                self._hotkey_start(delay=600)
+                if self._hotkey_start(delay=None):
+                    def go():
+                        if self.st == "starting":
+                            self._begin_typing()
+
+                    def give_up():                # focus never came back: let the user click into it
+                        if self.st == "starting":
+                            self.st = "countdown"
+                            self._countdown(3)
+                    self._after_id = self.after(150, lambda: self._after_target_focus(go, give_up))
             else:
                 self._start_button()
             return
         self._hotkey_start(delay=300)
+
+    def _overlay_press(self):
+        """macOS, mouse-down anywhere on the overlay while typing: hold the typing. The click activates
+        Human Typer for a moment and a key sent then never reaches the target app (tools/mac_e2e.sh
+        lost one character per PAUSE click before this)."""
+        self._hold_kept = False
+        if self.st == "typing" and self.engine is not None and not self.engine.paused:
+            self.engine.pause()
+            self._click_hold = self.engine
+
+    def _overlay_release(self):
+        """After the click was handled: PAUSE keeps the hold as a real pause, STOP ends it; any other
+        click (drag, stats...) resumes once the focus is back in the target app. If it does not come
+        back (e.g. [⌂] raised the main window) the typing stays paused."""
+        eng, self._click_hold = self._click_hold, None
+        if eng is None or self._hold_kept or eng is not self.engine or not eng.paused:
+            return
+
+        def resume():
+            if self.engine is eng and eng.paused:
+                eng.resume()
+        self._after_id = self.after(150, lambda: self._after_target_focus(resume, lambda: None))
+
+    def _overlay_pause(self):
+        """Overlay PAUSE / RESUME. macOS: RESUME waits until the focus is back in the target app,
+        so no keystroke is sent while the click moved it."""
+        if self._click_hold is not None:          # PAUSE clicked while typing: the hold becomes the pause
+            self._hold_kept = True
+            return
+        if (plat.IS_MAC and self.st == "typing" and self.engine is not None and self.engine.paused
+                and self.overlay is not None and self.overlay.can_return_focus()):
+            eng = self.engine
+
+            def go():
+                if self.engine is eng and eng.paused:
+                    eng.resume()
+            self._after_id = self.after(150, lambda: self._after_target_focus(go, go))
+            return
+        self._toggle_pause()
+
+    def _after_target_focus(self, fn, on_timeout, t_end=None, streak=0):
+        """Run fn() once another app has been frontmost for ~0.3 s in a row (the click's own
+        activation of this app can land a moment late, and keystrokes must not go to us);
+        on_timeout() after 2.5 s without that."""
+        self._after_id = None
+        t_end = time.time() + 2.5 if t_end is None else t_end
+        fr = self.overlay.focus_ret if self.overlay is not None else None
+        streak = streak + 1 if (fr is not None and fr.self_front() is False) else 0
+        if streak >= 3:
+            fn()
+        elif time.time() >= t_end:
+            on_timeout()
+        else:
+            self._after_id = self.after(100, lambda: self._after_target_focus(fn, on_timeout, t_end, streak))
 
     def _overlay_state(self):
         if self.st == "idle":
@@ -526,7 +695,7 @@ class HumanTyperApp(ctk.CTk):
             state=self._overlay_state(), pct=self._pct, wpm=stt.wpm(), elapsed=stt.elapsed(),
             eta=stt.eta() if active else None, typed=stt.total if self._ov_result == "DONE" else stt.net_chars(), total=stt.total,
             typos=stt.typos, revs=stt.revisions_text(), active=active, typing=self.st == "typing",
-            paused=bool(self.engine and self.engine.paused)))
+            paused=bool(self.engine and self.engine.paused), hotkeys=self.hotkeys.ok))
 
     # ---- art ----------------------------------------------------------
     def _draw_banner(self):
@@ -730,15 +899,18 @@ class HumanTyperApp(ctk.CTk):
         self._after_id = self.after(1000, lambda: self._countdown(n - 1))
 
     def _hotkey_start(self, delay=250):
+        """Arm and start typing after `delay` ms (None: the caller schedules it). False if no text."""
         if not self._text().strip():
             self._set_status("NO INPUT — paste some text first", T.WARN)
             if self.overlay:
                 self.overlay.flash("NO TEXT")
                 self._ov_dirty = True
-            return
+            return False
         self._enter_active("starting")
         self._set_status(f"ARMED — releasing {HK_START}...", T.WARN)
-        self._after_id = self.after(delay, self._begin_typing)   # let F8 be released
+        if delay is not None:
+            self._after_id = self.after(delay, self._begin_typing)   # let F8 be released
+        return True
 
     def _enter_active(self, state):
         self.st = state
@@ -782,7 +954,7 @@ class HumanTyperApp(ctk.CTk):
         text = self._text()
         if self.backend is None:
             try:
-                self.backend = PynputBackend()
+                self.backend = make_backend()
             except Exception as e:
                 self._finish_ui(f"ERROR — cannot send keys: {e}", T.ERR)
                 return
@@ -1043,6 +1215,15 @@ def diag_report(app):
     d["status_box_bbox"] = cv.bbox(app.status_box.tag)
     d["start_btn_bbox"] = app.start_btn.bbox()
     d["errors"] = list(getattr(app, "_diag_errors", []))
+    try:                                   # macOS permissions as this process sees them + hotkey state
+        from .e2e import mac_permissions
+        d.update(mac_permissions())
+        d["hotkeys_ok"], d["hotkeys_error"] = app.hotkeys.ok, app.hotkeys.error
+        d["hotkeys_mode"] = getattr(app.hotkeys, "mode", None)
+        from .e2e import setup_info
+        d["setup_window"] = setup_info(app)
+    except Exception as e:
+        d["perm_error"] = repr(e)
     return d
 
 
@@ -1075,6 +1256,10 @@ def main(argv=None):
     import sys
     argv = sys.argv[1:] if argv is None else argv
     app = HumanTyperApp()
+    if "--e2e" in argv:                        # macOS end-to-end CI test (tools/mac_e2e.sh)
+        from .e2e import E2EDriver
+        i = argv.index("--e2e")
+        E2EDriver(app, argv[i + 1] if i + 1 < len(argv) else "e2e")
     if "--diag" in argv:
         i = argv.index("--diag")
         run_diag(app, argv[i + 1] if i + 1 < len(argv) else "diag.json")

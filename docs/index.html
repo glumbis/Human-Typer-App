@@ -229,17 +229,16 @@
           <b>Security &amp; Privacy</b> → <b>General</b> tab → <b>Open Anyway</b>.</small></li>
       </ol>
 
-      <p class="part">C · GIVE IT PERMISSION TO TYPE</p>
+      <p class="part">C · GIVE IT PERMISSION TO TYPE (the app guides you)</p>
       <ol start="10">
-        <li>Human Typer needs two switches turned on, or it can't press keys for you. Go to
-          <b>System Settings → Privacy &amp; Security → Accessibility</b>.</li>
-        <li>Find <b>Human Typer</b> in the list and turn its switch <b>on</b> (enter your password if asked).
-          <small>Not in the list? Click <b>+</b> at the bottom, choose <b>Applications → Human Typer</b>, click
-          <b>Open</b>, then turn it on.</small></li>
-        <li>Go back to <b>Privacy &amp; Security</b> → <b>Input Monitoring</b> and turn <b>Human Typer</b> on the
-          same way. This is what makes the F8/F9 keys work.</li>
-        <li><b>Quit Human Typer</b> (click it, then press <b>⌘ Command + Q</b>) and <b>open it again</b> from
-          Applications. Permissions only take effect after a restart.</li>
+        <li>Human Typer opens a <b>SETUP</b> window with two rows: <b>1) Accessibility</b> (lets it press keys)
+          and <b>2) Input Monitoring</b> (makes fn+F8 / fn+F9 work).</li>
+        <li>Click <b>GRANT</b> on row 1. macOS opens the right settings page with Human Typer already in the
+          list: <b>turn its switch on</b> (enter your password if asked).</li>
+        <li>Click <b>GRANT</b> on row 2 and turn the switch on the same way.</li>
+        <li>Each row turns <b>✔ granted</b> by itself and the app says <b>All set!</b>. No restart needed.
+          <small>Closed the SETUP window? Reopen it with the <b>[ SETUP ]</b> button next to <b>HOTKEYS</b> at the
+          top of Human Typer. <b>HOTKEYS: ON</b> means fn+F8 is ready.</small></li>
       </ol>
 
       <p class="part">D · USE IT</p>
@@ -255,12 +254,15 @@
       <details class="trouble">
         <summary>Something's wrong? (click here)</summary>
         <ul>
-          <li><b>Nothing gets typed:</b> Accessibility is off, or the app wasn't restarted. Re-do steps 10–13.</li>
-          <li><b>fn+F8 does nothing:</b> Input Monitoring is off (step 12), or press the <b>▶ START</b> button in the
-            small floating stats window instead.</li>
-          <li><b>Updated from an older version and it stopped working:</b> macOS treats every new version as a new
-            app. In <b>Accessibility</b> and <b>Input Monitoring</b>, select the old Human Typer, click <b>−</b> to
-            remove it, then add the new one with <b>+</b> and turn it on.</li>
+          <li><b>Nothing gets typed:</b> open <b>[ SETUP ]</b> in Human Typer. Every row must say ✔ granted.</li>
+          <li><b>fn+F8 does nothing / says HOTKEYS: OFF:</b> Input Monitoring is off (row 2 in SETUP). You can also
+            press the <b>▶ START</b> button in the small floating stats window.</li>
+          <li><b>Updated from version 1.4.3 or older and the switches are on but it doesn't work:</b> one time
+            only, in <b>Accessibility</b> and in <b>Input Monitoring</b>, select Human Typer, click <b>−</b> to
+            remove it, then press <b>GRANT</b> in SETUP again. Newer versions keep their permissions when you
+            update.</li>
+          <li><b>SETUP shows ✔ but hotkeys still won't start:</b> click <b>RESTART HUMAN TYPER</b> in the SETUP
+            window.</li>
           <li><b>“Damaged and can't be opened”</b> or no <i>Open Anyway</i> button: open the <b>Terminal</b> app,
             paste <code>xattr -dr com.apple.quarantine /Applications/HumanTyper.app</code>, press Return, and
             open the app again.</li>

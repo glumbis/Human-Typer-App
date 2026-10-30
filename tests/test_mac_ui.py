@@ -246,19 +246,6 @@ def test_hotkey_labels(monkeypatch):
     assert macutil.hotkey_labels() == ("F8", "F9")
 
 
-def test_floating_panel_guarded(monkeypatch):
-    set_os(monkeypatch, False)
-    assert macutil.make_floating_panel(object()) is False
-    set_os(monkeypatch, True)
-    calls = []
-    w = SimpleNamespace(_w=".x", tk=SimpleNamespace(call=lambda *a: calls.append(a)))
-    assert macutil.make_floating_panel(w) is True
-    assert calls[0][:4] == ("::tk::unsupported::MacWindowStyle", "style", ".x", "floating")
-    assert "noActivates" in calls[0][4]
-    w.tk.call = lambda *a: (_ for _ in ()).throw(RuntimeError("no"))
-    assert macutil.make_floating_panel(w) is False
-
-
 # ---- selftest branching ----------------------------------------------------------
 def test_selftest_checks_branch(monkeypatch):
     from humantyper import selftest
@@ -270,3 +257,163 @@ def test_selftest_checks_branch(monkeypatch):
     monkeypatch.setattr(selftest.plat, "IS_MAC", False)
     n = names()
     assert "uia locator" in n and "pyobjc" not in n
+
+
+def test_focus_return_self_front():
+    me, notes = FakeApp(100), FakeApp(200)
+    ws = FakeWS(me)
+    fr = macutil.FocusReturn(ws, pid=100)
+    assert fr.self_front() is True
+    ws.front = notes
+    assert fr.self_front() is False
+    assert macutil.FocusReturn(None, pid=1).self_front() in (None, False)
+
+
+def test_disable_app_nap(monkeypatch):
+    calls = []
+    pi = SimpleNamespace(beginActivityWithOptions_reason_=lambda o, r: calls.append((o, r)) or "TOKEN")
+    assert macutil.disable_app_nap(pi) == "TOKEN"
+    opts = calls[0][0]
+    assert opts & 0x00FFFFFF and not opts & (1 << 20)        # user-initiated, idle sleep still allowed
+    bad = SimpleNamespace(beginActivityWithOptions_reason_=lambda o, r: 1 / 0)
+    assert macutil.disable_app_nap(bad) is None
+    set_os(monkeypatch, False)
+    assert macutil.disable_app_nap() is None
+
+
+# ---- permission requests / SETUP window logic ------------------------------------
+class FakeQuartzPerms:
+    def __init__(self, listen=False, post=False, boom=False):
+        self.listen, self.post, self.boom, self.calls = listen, post, boom, []
+
+    def _r(self, name, val):
+        self.calls.append(name)
+        if self.boom:
+            raise RuntimeError("tcc")
+        return val
+
+    def CGPreflightListenEventAccess(self):
+        return self._r("preflight_listen", self.listen)
+
+    def CGPreflightPostEventAccess(self):
+        return self._r("preflight_post", self.post)
+
+    def CGRequestListenEventAccess(self):
+        return self._r("request_listen", self.listen)
+
+    def CGRequestPostEventAccess(self):
+        return self._r("request_post", self.post)
+
+
+def test_listen_and_post_access():
+    q = FakeQuartzPerms(listen=True, post=False)
+    assert macutil.listen_access(q) is True and macutil.post_access(q) is False
+    assert macutil.listen_access(FakeQuartzPerms(boom=True)) is None          # errors: unknown
+    assert macutil.listen_access(SimpleNamespace()) is None                   # old pyobjc/macOS: no API
+
+
+def test_request_permissions_use_system_prompts():
+    q = FakeQuartzPerms()
+    prompts = []
+    assert macutil.request_accessibility(q, ax_prompt=lambda: prompts.append(1) or False) is False
+    assert q.calls == ["request_post"] and prompts == [1]
+    assert macutil.request_input_monitoring(q) is False and q.calls[-1] == "request_listen"
+    # missing APIs never raise
+    assert macutil.request_input_monitoring(SimpleNamespace()) is None
+    assert macutil.request_accessibility(SimpleNamespace(), ax_prompt=lambda: True) is True
+
+
+def test_permission_calls_are_noops_off_mac(monkeypatch):
+    set_os(monkeypatch, False)
+    assert macutil.listen_access() is None and macutil.post_access() is None
+    assert macutil.request_input_monitoring() is None and macutil.request_accessibility() is None
+
+
+def test_permission_status_and_rows():
+    st = macutil.permission_status(ax=lambda: True, listen=lambda: False)
+    assert st == {"accessibility": True, "input": False}
+    keys = [k for k, *_ in macutil.PERMISSIONS]
+    assert keys == ["accessibility", "input"]
+    panes = dict((k, p) for k, _t, _w, p in macutil.PERMISSIONS)
+    assert panes["accessibility"].endswith("Privacy_Accessibility")
+    assert panes["input"].endswith("Privacy_ListenEvent")
+
+
+@pytest.mark.parametrize("status,hk,fails,want", [
+    ({"accessibility": False, "input": True}, False, 0, "missing"),
+    ({"accessibility": True, "input": False}, True, 0, "missing"),   # hotkeys on but typing would fail
+    ({"accessibility": True, "input": True}, True, 0, "ok"),
+    ({"accessibility": True, "input": None}, True, 0, "ok"),         # unknown never nags
+    ({"accessibility": True, "input": True}, False, 1, "waiting"),
+    ({"accessibility": True, "input": True}, False, 3, "restart"),   # granted but tap still refused
+])
+def test_setup_state(status, hk, fails, want):
+    assert macutil.setup_state(status, hk, fails) == want
+
+
+def test_bundle_path_and_relaunch_command():
+    exe = "/Applications/HumanTyper.app/Contents/MacOS/HumanTyper"
+    assert macutil.bundle_path(exe) == "/Applications/HumanTyper.app"
+    assert macutil.bundle_path("/usr/bin/python3") is None
+    assert macutil.relaunch_command(exe, [exe], True) == ["open", "-n", "/Applications/HumanTyper.app"]
+    assert macutil.relaunch_command("/usr/bin/python3", ["main.py"], False) == ["/usr/bin/python3", "main.py"]
+
+
+def _tk_root():
+    import tkinter as tk
+    try:
+        r = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display for Tk")
+    r.withdraw()
+    T.init_fonts(r)
+    return r
+
+
+def test_setup_window_flow():
+    """Missing -> granted: hotkeys retried at once (no restart), all set, closes by itself."""
+    from humantyper.ui.setup_window import SetupWindow, OK_MARK, BAD_MARK
+    root = _tk_root()
+    try:
+        perms = {"accessibility": False, "input": False}
+        hk = {"ok": False, "tries": 0}
+        asked, panes, closed = [], [], []
+
+        def retry():
+            hk["tries"] += 1
+            hk["ok"] = True
+        w = SetupWindow(root, lambda: hk["ok"], retry, lambda: None, status_fn=lambda: perms,
+                        request_fns={"accessibility": lambda: asked.append("ax"),
+                                     "input": lambda: asked.append("im")},
+                        open_pane=panes.append, auto_close_ms=50, on_closed=lambda: closed.append(1))
+        assert w.state == "missing" and w.rows["input"][0].cget("text") == BAD_MARK
+        assert hk["tries"] == 0                                  # never retried while missing
+        w.grant("input", macutil.PANE_INPUT_MONITORING)
+        assert asked == ["im"] and panes == [macutil.PANE_INPUT_MONITORING]
+        perms.update(accessibility=True, input=True)             # user flips both switches
+        w.poll()
+        assert w.state == "ok" and hk["tries"] == 1 and w.rows["accessibility"][0].cget("text") == OK_MARK
+        assert w.report()["closing"]
+        for _ in range(20):
+            root.update()
+            if closed:
+                break
+            root.after(20)
+        assert closed == [1]
+    finally:
+        root.destroy()
+
+
+def test_setup_window_offers_restart_when_tap_keeps_failing():
+    from humantyper.ui.setup_window import SetupWindow
+    root = _tk_root()
+    try:
+        w = SetupWindow(root, lambda: False, lambda: None, lambda: None,
+                        status_fn=lambda: {"accessibility": True, "input": True},
+                        request_fns={}, open_pane=lambda p: None, auto_close_ms=None)
+        for _ in range(3):
+            w.poll()
+        assert w.state == "restart" and w.report()["restart_button"]
+        w.close()
+    finally:
+        root.destroy()

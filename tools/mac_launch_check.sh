@@ -46,6 +46,8 @@ if not d.get("canvas_bg_items"):
     bad.append("galaxy backdrop canvas is empty")
 if not d.get("menu_box_bbox") or not d.get("status_box_bbox"):
     bad.append("command menu / status box not drawn")
+if d.get("ax_trusted") is False and not d.get("setup_window"):
+    bad.append("permissions missing but the SETUP window did not open")
 if d.get("errors"):
     bad.append(f"{len(d['errors'])} Tk callback exception(s)")
 if bad:

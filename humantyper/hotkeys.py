@@ -26,8 +26,8 @@ MAC_FIELD_AUTOREPEAT = 8  # kCGKeyboardEventAutorepeat
 MAC_FIELD_SRC_PID = 41   # kCGEventSourceUnixProcessID
 MAC_TAP_DISABLED = (0xFFFFFFFE, 0xFFFFFFFF)   # kCGEventTapDisabledByTimeout / ...ByUserInput
 MAC_KEY_MASK = (1 << MAC_KEYDOWN) | (1 << MAC_KEYUP)
-TAP_HELP = ("grant Accessibility and Input Monitoring (System Settings > Privacy & Security), "
-            "then restart Human Typer")
+TAP_HELP = ("grant Accessibility or Input Monitoring (System Settings > Privacy & Security); "
+            "hotkeys switch on by themselves within a few seconds")
 
 
 def mac_handle(held: set, callbacks: dict, event_type: int, keycode: int,
@@ -70,25 +70,43 @@ class MacEventTap:
         self._thread = None
         self._cb = None                       # keep the Python callback alive
         self.error = ""
+        self.events_seen = 0                  # diagnostics (--e2e / --diag)
+        self.last_event = None
+        self.mode = None                      # "active" | "listen" once running
 
     def _callback(self, proxy, etype, event, refcon):
+        self.events_seen += 1
         try:
             if int(etype) in MAC_TAP_DISABLED:          # macOS disabled us (slow callback): re-arm
                 if self._tap is not None:
                     self.Q.CGEventTapEnable(self._tap, True)
                 return event
             if self.handler(int(etype), event):
+                self.last_event = (int(etype), "handled")
                 return None
         except Exception:
             pass
         return event
 
+    def _create(self):
+        """Create the tap: an active (event-swallowing) tap needs Accessibility; if macOS refuses it,
+        fall back to a listen-only tap, which only needs Input Monitoring (F8 then also reaches the
+        target app, which ignores it). Returns (tap, mode) or (None, None) without any permission."""
+        Q = self.Q
+        opts = [(Q.kCGEventTapOptionDefault, "active"),
+                (getattr(Q, "kCGEventTapOptionListenOnly", 1), "listen")]
+        for opt, mode in opts:
+            tap = Q.CGEventTapCreate(Q.kCGSessionEventTap, Q.kCGHeadInsertEventTap, opt, MAC_KEY_MASK,
+                                     self._cb, None)
+            if tap is not None:
+                return tap, mode
+        return None, None
+
     def _run(self, ready):
         Q = self.Q
         try:
             self._cb = self._callback
-            tap = Q.CGEventTapCreate(Q.kCGSessionEventTap, Q.kCGHeadInsertEventTap,
-                                     Q.kCGEventTapOptionDefault, MAC_KEY_MASK, self._cb, None)
+            tap, mode = self._create()
             if tap is None:
                 self.error = TAP_HELP
                 return
@@ -96,7 +114,7 @@ class MacEventTap:
             loop = Q.CFRunLoopGetCurrent()
             Q.CFRunLoopAddSource(loop, src, Q.kCFRunLoopCommonModes)
             Q.CGEventTapEnable(tap, True)
-            self._tap, self._loop = tap, loop
+            self._tap, self._loop, self.mode = tap, loop, mode
         except Exception as e:
             self.error = f"{type(e).__name__}: {e}"
             return
@@ -191,7 +209,39 @@ class GlobalHotkeys:
             self._listener = None
             raise RuntimeError(f"Global hotkeys unavailable: {self.error}") from e
 
+    @property
+    def mode(self) -> Optional[str]:
+        """"active" / "listen" (macOS event tap), "hook" (Windows), None while off."""
+        if not self.ok:
+            return None
+        return getattr(self._listener, "mode", None) or "hook"
+
+    def retry(self, upgrade: bool = False) -> bool:
+        """Try again to switch the hotkeys on (macOS: after the user granted the permission, no
+        restart needed). upgrade=True also replaces a listen-only tap by an active one (which keeps
+        F8/F9 away from the target app) once that is possible. Returns True while hotkeys work."""
+        if self.ok and not (upgrade and self.mode == "listen"):
+            return True
+        old, was_ok = self._listener, self.ok
+        try:
+            if was_ok:
+                self._listener = None
+                self._held.clear()
+            self.start()
+        except RuntimeError:
+            if was_ok:                        # keep the working listen-only tap
+                self._listener, self.ok, self.error = old, True, ""
+            return self.ok
+        if was_ok and old is not None:
+            if self.mode == "listen":         # no better: keep the old one, drop the new one
+                self._listener.stop()
+                self._listener = old
+            else:
+                old.stop()
+        return True
+
     def stop(self) -> None:
+        self.ok = False
         if self._listener is not None:
             try:
                 self._listener.stop()

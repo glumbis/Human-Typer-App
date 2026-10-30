@@ -115,6 +115,108 @@ class PynputBackend:
         return self._locator
 
 
+# ---- macOS: Quartz keystrokes ---------------------------------------------------------------
+MAC_KC = {"return": 36, "tab": 48, "delete": 51, "left": 123, "right": 124, "down": 125, "up": 126,
+          "c": 8, "shift": 56, "ctrl": 59, "alt": 58, "cmd": 55}
+MAC_FLAG = {"shift": 0x20000, "ctrl": 0x40000, "alt": 0x80000, "cmd": 0x100000}   # kCGEventFlagMask*
+MAC_FLAG_NONCOALESCED = 0x100                                                     # set on real HID events
+
+
+def utf16_len(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+class QuartzBackend(PynputBackend):
+    """macOS keystrokes posted straight through Quartz (CGEventPost to the HID event tap).
+
+    Characters are sent as keyboard events carrying the Unicode text (CGEventKeyboardSetUnicodeString),
+    so no keyboard-layout lookup (TSM/TIS, main-thread only on macOS 14+) is ever needed and the
+    worker thread can type anything. Special keys use virtual key codes; modifiers are expressed as
+    event flags on every event (plus modifier key down/up events), and always released again, so
+    they never stick. Same method contract as PynputBackend."""
+
+    def __init__(self, quartz=None, sleep=time.sleep):
+        if quartz is None:
+            import Quartz as quartz           # lazy: keeps tests import-light
+        self.Q = quartz
+        self._sleep = sleep
+        try:
+            self._src = quartz.CGEventSourceCreate(quartz.kCGEventSourceStateHIDSystemState)
+        except Exception:
+            self._src = None
+
+    def _post(self, keycode: int, down: bool, flags: int = 0, text: str = None) -> None:
+        Q = self.Q
+        ev = Q.CGEventCreateKeyboardEvent(self._src, keycode, down)
+        if text is not None:
+            Q.CGEventKeyboardSetUnicodeString(ev, utf16_len(text), text)
+        Q.CGEventSetFlags(ev, flags | MAC_FLAG_NONCOALESCED)
+        Q.CGEventPost(Q.kCGHIDEventTap, ev)
+
+    def _key(self, name_or_code, flags: int = 0) -> None:
+        kc = MAC_KC[name_or_code] if isinstance(name_or_code, str) else name_or_code
+        self._post(kc, True, flags)
+        self._post(kc, False, flags)
+
+    def type_char(self, ch: str) -> None:
+        if ch == "\n":
+            return self.press_enter()
+        if ch == "\t":
+            return self.press_tab()
+        self._post(0, True, 0, ch)
+        self._post(0, False, 0, ch)
+
+    def press_enter(self) -> None:
+        self._key("return")
+
+    def press_tab(self) -> None:
+        self._key("tab")
+
+    def backspace(self) -> None:
+        self._key("delete")
+
+    def left(self) -> None:
+        self._key("left")
+
+    def right(self) -> None:
+        self._key("right")
+
+    def _combo(self, mods, key) -> None:
+        """mods: names from MAC_FLAG; key: name from MAC_KC."""
+        flags = 0
+        try:
+            for m in mods:
+                flags |= MAC_FLAG[m]
+                self._post(MAC_KC[m], True, flags)
+            self._sleep(0.015)
+            self._key(key, flags)
+            self._sleep(0.015)
+        finally:
+            for m in reversed(mods):
+                flags &= ~MAC_FLAG[m]
+                self._post(MAC_KC[m], False, flags)
+
+    def shift_left(self) -> None:
+        self._combo(["shift"], "left")
+
+    def select_to_start(self) -> None:
+        self._combo(["cmd", "shift"], "up")
+
+    def ctrl_left(self) -> None:
+        self._combo(["alt"], "left")
+
+    def ctrl_shift_left(self) -> None:
+        self._combo(["alt", "shift"], "left")
+
+    def copy(self) -> None:
+        self._combo(["cmd"], "c")
+
+
+def make_backend():
+    """The real keystroke backend for this OS (macOS: Quartz, elsewhere: pynput)."""
+    return QuartzBackend() if plat.IS_MAC else PynputBackend()
+
+
 class FakeLocator:
     """Fake UIA locator over a FakeBackend (same snapshot/select interface as UiaLocator)."""
 

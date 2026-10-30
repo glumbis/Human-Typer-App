@@ -45,10 +45,15 @@ Gatekeeper blocks the first launch.
 
 **C · Permissions** (without these it can't press keys for you)
 
-10. System Settings → **Privacy & Security → Accessibility**.
-11. Turn **Human Typer** on. Not listed? Click **+**, choose Applications → Human Typer → Open, then turn it on.
-12. Privacy & Security → **Input Monitoring**: turn **Human Typer** on the same way (needed for F8/F9).
-13. **Quit Human Typer (⌘Q) and open it again.** Permissions only apply after a restart.
+10. On first launch the **SETUP** window opens (later: the **[ SETUP ]** button next to *HOTKEYS* in the title
+    line). It has one row per permission, **1) Accessibility** (to press keys) and **2) Input Monitoring**
+    (for fn+F8 / fn+F9), each with a live ✗ / ✔ status.
+11. Press **[ GRANT ]** on a row: macOS shows its own prompt and opens the right Settings page with Human
+    Typer already in the list. **Turn on the switch next to Human Typer.** Repeat for the second row.
+12. When both show ✔ the hotkeys switch on immediately (title line: **HOTKEYS: ON**), the window says
+    *All set!* and closes. No restart needed; if macOS insists on one, the window offers **[ RESTART HUMAN TYPER ]**.
+13. (By hand instead: System Settings → Privacy & Security → Accessibility and → Input Monitoring, turn
+    Human Typer on; not listed? **+** → Applications → Human Typer.)
 
 **D · Use it**
 
@@ -60,10 +65,13 @@ Gatekeeper blocks the first launch.
 
 **Troubleshooting**
 
-- *Nothing gets typed*: Accessibility is off or the app wasn't restarted (steps 10–13).
-- *fn+F8 does nothing*: Input Monitoring is off (step 12). The ▶ START button in the floating stats window works too.
-- *Stopped working after an update*: macOS treats each new build as a new app. In Accessibility and Input
-  Monitoring remove the old Human Typer with **−**, add the new one with **+**, turn it on, restart.
+- *Nothing gets typed*: Accessibility is off: open **[ SETUP ]** (steps 10–12).
+- *fn+F8 does nothing / HOTKEYS: OFF*: Input Monitoring is off: open **[ SETUP ]**. The ▶ START button in the floating stats
+  window works too: clicking it briefly switches to Human Typer, then it hands the focus back to the app you
+  were typing in and starts.
+- *Switch is ON but nothing works (after updating from 1.4.3 or older)*: those versions looked like a new app to
+  macOS after every update. In Accessibility and Input Monitoring remove Human Typer with **−**, add it again
+  with **+** and turn it on. Needed once: newer versions keep the permission across updates.
 - *"Damaged and can't be opened"* or no *Open Anyway* button: run this in Terminal, then open the app again:
 
   ```

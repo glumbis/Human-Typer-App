@@ -122,6 +122,7 @@ class TypingEngine:
         self._resume = threading.Event()
         self._resume.set()
         self._thread: Optional[threading.Thread] = None
+        self.error: Optional[str] = None    # traceback of the last crash of the typing thread
         self._kind = "idle"
         self._buf: List[str] = []
         self._cur = 0
@@ -165,6 +166,8 @@ class TypingEngine:
         try:
             result = "done" if self.run(text, _reset_flags=False) else "stopped"
         except Exception:
+            import traceback
+            self.error = traceback.format_exc()
             self._emit_status("error")
         finally:
             if self.on_finish:
@@ -350,7 +353,8 @@ class TypingEngine:
         nm = getattr(loc, "name", "UIA")
         snap = loc.snapshot()
         if not snap:
-            self._log(f"{tag} // locate: {nm} {BAD} (no text pattern)")
+            why = getattr(loc, "last_error", "") if plat.IS_MAC else ""
+            self._log(f"{tag} // locate: {nm} {BAD} (no text pattern{': ' + why if why else ''})")
             return None
         text, caret = snap
         if "\r\n" in text:

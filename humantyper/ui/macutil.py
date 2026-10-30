@@ -2,7 +2,7 @@
 
 * permission checks (Accessibility / Input Monitoring) and deep links to System Settings
 * FocusReturn: remember the last frontmost app that is not us and re-activate it
-* floating, non-activating panel style for the stats overlay (Aqua Tk)
+* App Nap opt-out
 * visible screen area (menu bar and Dock excluded) via AppKit
 * window icon via iconphoto
 """
@@ -18,9 +18,10 @@ PANE_INPUT_MONITORING = "x-apple.systempreferences:com.apple.preference.security
 ACTIVATE_IGNORING_OTHER_APPS = 1 << 1      # NSApplicationActivateIgnoringOtherApps
 
 PERM_TEXT = ("macOS needs permission: System Settings > Privacy & Security > Accessibility > "
-             "enable Human Typer (and Input Monitoring for F8/F9).")
-INPUT_MON_TEXT = ("F8/F9 hotkeys need Input Monitoring: System Settings > Privacy & Security > "
-                  "Input Monitoring > enable Human Typer, then restart the app.")
+             "enable Human Typer (and Input Monitoring for F8/F9). Already on after an update? "
+             "Remove it with - and add it again with +.")
+INPUT_MON_TEXT = ("F8/F9 hotkeys need Input Monitoring (or Accessibility): System Settings > Privacy & "
+                  "Security > Input Monitoring > enable Human Typer. They switch on by themselves.")
 
 
 def hotkey_labels():
@@ -56,6 +57,121 @@ def open_settings(pane=PANE_ACCESSIBILITY, runner=subprocess.run):
         return True
     except Exception:
         return False
+
+
+def _quartz():
+    try:
+        import Quartz
+        return Quartz
+    except Exception:
+        return None
+
+
+def _q_call(quartz, name):
+    """Call an optional Quartz function (macOS 10.15+, pyobjc 6+). None if missing/failing."""
+    q = quartz if quartz is not None else _quartz()
+    fn = getattr(q, name, None) if q is not None else None
+    if fn is None:
+        return None
+    try:
+        return bool(fn())
+    except Exception:
+        return None
+
+
+def listen_access(quartz=None):
+    """Input Monitoring granted? (CGPreflightListenEventAccess; None = unknown / not a Mac)."""
+    if quartz is None and not plat.IS_MAC:
+        return None
+    return _q_call(quartz, "CGPreflightListenEventAccess")
+
+
+def post_access(quartz=None):
+    """May we post key events? (CGPreflightPostEventAccess, part of Accessibility in Settings)."""
+    if quartz is None and not plat.IS_MAC:
+        return None
+    return _q_call(quartz, "CGPreflightPostEventAccess")
+
+
+def request_accessibility(quartz=None, ax_prompt=None):
+    """Ask macOS to show its own Accessibility prompt; it also adds Human Typer to the list, so no
+    "+" is needed. Returns the current trust state (True/False/None)."""
+    if quartz is None and ax_prompt is None and not plat.IS_MAC:
+        return None
+    _q_call(quartz, "CGRequestPostEventAccess")
+    return (ax_prompt or (lambda: ax_trusted(prompt=True)))()
+
+
+def request_input_monitoring(quartz=None):
+    """Ask macOS for Input Monitoring (system prompt + adds the app to the list)."""
+    if quartz is None and not plat.IS_MAC:
+        return None
+    return _q_call(quartz, "CGRequestListenEventAccess")
+
+
+# one row per permission in the SETUP window: (key, title, what for, Settings pane)
+PERMISSIONS = (
+    ("accessibility", "1) ACCESSIBILITY", "lets Human Typer press keys", PANE_ACCESSIBILITY),
+    ("input", "2) INPUT MONITORING", "lets fn+F8 / fn+F9 work", PANE_INPUT_MONITORING),
+)
+
+
+def permission_status(ax=None, listen=None):
+    """{"accessibility": bool|None, "input": bool|None} as macOS reports it right now."""
+    return {"accessibility": ax_trusted() if ax is None else ax(),
+            "input": listen_access() if listen is None else listen()}
+
+
+def setup_state(status, hotkeys_ok, tap_failures=0, restart_after=3):
+    """Pure decision for the SETUP window:
+    "missing"  - a permission is not granted yet (unknown counts as granted: never nag on guesses),
+    "restart"  - all granted, but the hotkey tap still cannot be created after `restart_after`
+                 tries (macOS sometimes only applies Input Monitoring after a relaunch),
+    "waiting"  - all granted, hotkeys not on yet (the next retry will probably succeed),
+    "ok"       - everything works."""
+    if any(v is False for v in status.values()):
+        return "missing"
+    if hotkeys_ok:
+        return "ok"
+    return "restart" if tap_failures >= restart_after else "waiting"
+
+
+def bundle_path(executable):
+    """/Applications/HumanTyper.app for .../HumanTyper.app/Contents/MacOS/HumanTyper, else None."""
+    parts = executable.split("/")
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].endswith(".app") and parts[i + 1:i + 2] == ["Contents"]:
+            return "/".join(parts[:i + 1])
+    return None
+
+
+def relaunch_command(executable, argv, frozen):
+    """Command that starts a fresh copy of the app: `open -n <bundle>` for the .app (so macOS treats
+    it like a Finder launch and re-reads the permissions), else the same interpreter + script."""
+    app = bundle_path(executable) if frozen else None
+    if app:
+        return ["open", "-n", app]
+    return [executable] + list(argv)
+
+
+# ---- App Nap -------------------------------------------------------------------
+NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SLEEP = 0x00FFFFFF & ~(1 << 20)
+
+
+def disable_app_nap(process_info=None, reason="Human Typer types into other apps on a hotkey"):
+    """Opt out of App Nap: while our window is hidden behind the target app macOS would otherwise
+    throttle the Tk timers (hotkeys handled seconds late) and the typing thread's sleeps.
+    Returns the activity token (keep a reference) or None."""
+    if not plat.IS_MAC and process_info is None:
+        return None
+    try:
+        if process_info is None:
+            from Foundation import NSProcessInfo
+            process_info = NSProcessInfo.processInfo()
+        return process_info.beginActivityWithOptions_reason_(
+            NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SLEEP, reason)
+    except Exception:
+        return None
 
 
 # ---- focus return --------------------------------------------------------------
@@ -100,6 +216,16 @@ class FocusReturn:
             pass
         return self.last
 
+    def self_front(self):
+        """True while this process is the frontmost app (None if unknown)."""
+        if self.ws is None:
+            return None
+        app = self._front()
+        try:
+            return app is not None and int(app.processIdentifier()) == self.pid
+        except Exception:
+            return None
+
     def restore(self):
         """Re-activate the remembered app (no-op if focus is already on another app). True if we tried."""
         app = self.last
@@ -113,20 +239,6 @@ class FocusReturn:
             return True
         except Exception:
             return False
-
-
-# ---- overlay window style ------------------------------------------------------
-def make_floating_panel(widget):
-    """Turn a (still withdrawn) Tk toplevel into a floating, title-less, non-activating Aqua panel.
-    Returns True when Tk accepted the style (so overrideredirect is not needed)."""
-    if not plat.IS_MAC:
-        return False
-    try:
-        widget.tk.call("::tk::unsupported::MacWindowStyle", "style", widget._w,
-                       "floating", ("noTitleBar", "noActivates"))
-        return True
-    except Exception:
-        return False
 
 
 # ---- screen area ---------------------------------------------------------------
