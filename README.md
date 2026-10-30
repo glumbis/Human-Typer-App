@@ -194,9 +194,12 @@ account) and sends the result to the paste box.
   between generations, unloads after 10 idle minutes and always dies with the app.
 * **Models** (`.gguf`): picked up automatically from LM Studio (`%USERPROFILE%\.lmstudio\models`,
   `%USERPROFILE%\.cache\lm-studio\models`) and `%LOCALAPPDATA%\HumanTyper\models`. The model manager can download
-  Gemma 4 E2B, Qwen3 1.7B and Llama 3.2 1B from Hugging Face (resumable, size/SHA256 verified) and delete the ones it
-  downloaded itself (your LM Studio files are never touched). Models are not bundled with the app.
-* **Options**: length (50-800 words), language (auto / English / Norsk), tone (neutral / casual / formal / student).
+  Gemma 4 E2B, Qwen3 1.7B, Llama 3.2 1B and **Borealis 4B** (from the National Library of Norway, the best choice
+  for Bokmål and Nynorsk; [NB-License](https://ai.nb.no/license/) + Gemma Terms of Use) from Hugging Face
+  (resumable, size/SHA256 verified) and delete the ones it downloaded itself (your LM Studio files are never
+  touched). Models are not bundled with the app.
+* **Options**: length (any number of words; the slider covers 50-800), language (auto / English / Bokmål /
+  Nynorsk), tone (neutral / casual / formal / student), and the number of `[draft][final]` revision pairs.
   The output is editable; **USE -> PASTE BOX** replaces the paste box, **COPY** copies it.
 * **Running from source**: fetch the engine once with `.\build.ps1 -FetchEngine` (or `python tools/fetch_engine.py`).
   It is extracted to `packaging/vendor/llama/` (git-ignored). `.\build.ps1` does this automatically.

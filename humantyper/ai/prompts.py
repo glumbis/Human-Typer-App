@@ -1,6 +1,7 @@
 """System prompt / message construction for the text writer."""
 
-LANGUAGES = ("auto", "english", "norsk")
+LANGUAGES = ("auto", "english", "bokmål", "nynorsk")
+LEGACY_LANG = {"norsk": "bokmål"}            # setting saved by older versions
 TONES = ("neutral", "casual", "formal", "student")
 
 _TONE = {
@@ -12,9 +13,13 @@ _TONE = {
 }
 _LANG = {
     "english": "Write in English.",
-    "norsk": "Skriv på norsk (bokmål). Write the entire text in Norwegian Bokmål.",
+    "bokmål": "Skriv på norsk bokmål. Write the entire text in Norwegian Bokmål.",
+    "nynorsk": ("Skriv på nynorsk. Heile teksten skal vere på nynorsk, ikkje bokmål. "
+                "Write the entire text in Norwegian Nynorsk (not Bokmål), with Nynorsk spelling and words "
+                "such as ikkje, eg, kva, korleis, heile, vere, frå, berre, mykje."),
     "auto": "Write in the same language as the request.",
 }
+_LANG["norsk"] = _LANG["bokmål"]            # older saved setting
 
 
 def system_prompt(words: int, language: str = "auto", tone: str = "neutral") -> str:
@@ -142,15 +147,27 @@ def draft_messages(sentence: str, language: str = "auto", model_name: str = ""):
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _letters(s: str) -> str:
+    """Only the letters/digits, lower-cased: two texts with the same words compare equal."""
+    return re.sub(r"[\W_]+", "", s.lower())
+
+
+_PREAMBLE = re.compile(r"^(here('s| is)|sure|okay|ok|her er|her kjem|klart|sjølvsagt|selvfølgelig)\b.*:\s*$",
+                       re.I)
+
+
 def clean_draft(draft: str, original: str):
     """Usable draft text, or None if the model's answer is unusable."""
-    d = (draft or "").strip().splitlines()
-    d = d[0].strip() if d else ""
-    for q in ('"', "'", "“", "”", "‘", "’", "`"):
+    lines = [ln.strip() for ln in (draft or "").strip().splitlines() if ln.strip()]
+    if lines and (_PREAMBLE.match(lines[0]) or lines[0].endswith(":")):
+        lines = lines[1:]                       # "Here is the draft:" / "Her er utkastet:" lead-in
+    d = lines[0] if lines else ""
+    for q in ('"', "'", "“", "”", "‘", "’", "`", "«", "»"):
         if len(d) > 1 and d.startswith(q) and d.endswith(q):
             d = d[1:-1].strip()
-    d = re.sub(r"^(draft|first draft|utkast)\s*:\s*", "", d, flags=re.I)
-    if not d or any(c in d for c in "[]\\") or d.lower() == original.strip().lower():
+    d = re.sub(r"^(draft|first draft|utkast|førsteutkast|fyrsteutkast)\s*:\s*", "", d, flags=re.I)
+    # the same words with other punctuation/case would be a pointless revision
+    if not d or any(c in d for c in "[]\\") or _letters(d) == _letters(original):
         return None
     ratio = len(d) / max(1, len(original.strip()))
     if not 0.4 <= ratio <= 1.8:
@@ -159,7 +176,12 @@ def clean_draft(draft: str, original: str):
 
 
 _CUT_WORDS = {"and", "but", "because", "which", "while", "so", "that", "with", "when", "since",
-              "og", "men", "fordi", "som", "mens", "så", "med", "når", "siden"}
+              "og", "men", "fordi", "som", "mens", "så", "med", "når", "siden",
+              "medan", "sidan", "då", "slik"}                       # nynorsk
+# small words a cut-short draft should not end on
+_WEAK_END = {"a", "an", "the", "to", "of", "for", "and", "or", "is", "are", "was", "at", "in", "on", "with", "that",
+             "å", "er", "var", "at", "og", "eller", "for", "til", "i", "på", "med", "som", "en", "ei", "et", "eit",
+             "ein", "av", "om", "det", "den", "dei", "de", "seg", "sin", "si", "sitt"}
 
 
 def fallback_draft(original: str, rng=None):
@@ -171,11 +193,26 @@ def fallback_draft(original: str, rng=None):
     if len(words) < 6:
         return None
     end_punct = s[-1] if s[-1] in ".!?" else ""          # mid-sentence chunks stay unpunctuated
-    cuts = [i for i in range(3, len(words) - 2)
-            if words[i - 1].endswith(",") or words[i].lower().strip(",;") in _CUT_WORDS]
-    i = rng.choice(cuts) if cuts else max(3, int(len(words) * rng.uniform(0.55, 0.7)))
-    d = " ".join(words[:i]).rstrip(",;:") + end_punct
-    return clean_draft(d, s)
+
+    def cut(i):
+        while i > 3 and words[i - 1].lower().strip(",;:") in _WEAK_END:
+            i -= 1                                      # never end on "er", "at", "og", "the", ...
+        return " ".join(words[:i]).rstrip(",;:") + end_punct
+
+    def ok(i):
+        return 0.45 <= len(cut(i)) / float(len(s)) <= 0.85
+
+    joints = [i for i in range(3, len(words) - 1)
+              if (words[i - 1].endswith(",") or words[i].lower().strip(",;") in _CUT_WORDS) and ok(i)]
+    if joints:
+        i = rng.choice(joints)
+    else:                                               # no good joint: cut at roughly 60-75 %
+        plain = [i for i in range(3, len(words) - 1) if ok(i)]
+        if not plain:
+            return None
+        target = len(words) * rng.uniform(0.6, 0.75)
+        i = min(plain, key=lambda k: abs(k - target))
+    return clean_draft(cut(i), s)
 
 
 def apply_revisions(text: str, pairs) -> str:

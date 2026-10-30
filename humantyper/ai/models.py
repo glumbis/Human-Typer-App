@@ -113,6 +113,11 @@ CATALOG = [
                  "Llama-3.2-1B-Instruct-Q4_K_M.gguf", 807694464,
                  "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
                  "tiny and very fast, simple text"),
+    # National Library of Norway (NbAiLab), Gemma 3 based; NB-License + Gemma Terms of Use
+    CatalogEntry("borealis-4b", "Borealis 4B (Nasjonalbiblioteket)", "NbAiLab/borealis-4b-gguf",
+                 "borealis-4b-Q4_K_M.gguf", 2489894560,
+                 "4486e86d94194c631e8c18b530b796b1287fdf959f9a0ac1fb17441beadb8c51",
+                 "best for bokmål and nynorsk"),
 ]
 
 

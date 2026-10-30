@@ -412,3 +412,47 @@ def test_pick_spans_uses_clauses_when_more_revisions_than_sentences():
     be = FakeBackend()
     TypingEngine(be, Settings(typo_rate=0.0, seed=1, locate_mode="count"), sleep=lambda s: None).run(marked)
     assert be.text == text
+
+
+def test_languages_bokmal_nynorsk_and_legacy():
+    assert prompts.LANGUAGES == ("auto", "english", "bokmål", "nynorsk")
+    nn = prompts.build_messages("om katter", 100, "nynorsk", "neutral", "borealis")[0]["content"]
+    assert "nynorsk" in nn.lower() and "ikkje bokmål" in nn
+    nb = prompts.build_messages("om katter", 100, "bokmål", "neutral", "borealis")[0]["content"]
+    assert "Bokmål" in nb and "nynorsk" not in nb.lower()
+    # a 'norsk' setting saved by older versions still means bokmål
+    assert prompts.LEGACY_LANG["norsk"] == "bokmål"
+    assert prompts.build_messages("x", 50, "norsk")[0]["content"] == prompts.build_messages("x", 50, "bokmål")[0]["content"]
+    assert "Nynorsk" in prompts.draft_messages("Eg likar å lage mat.", "nynorsk")[0]["content"]
+
+
+def test_borealis_in_catalog():
+    e = next(x for x in M.CATALOG if x.id == "borealis-4b")
+    assert e.repo == "NbAiLab/borealis-4b-gguf" and e.filename == "borealis-4b-Q4_K_M.gguf"
+    assert e.url == "https://huggingface.co/NbAiLab/borealis-4b-gguf/resolve/main/borealis-4b-Q4_K_M.gguf"
+    assert e.size == 2489894560
+
+
+def test_clean_draft_rejects_punctuation_only_and_preamble():
+    orig = "På den måten bidrar matlaging til allsidig utvikling og er en verdifull del av skolegangen."
+    assert P.clean_draft(orig.rstrip("."), orig) is None                       # only the full stop differs
+    assert P.clean_draft(orig.upper(), orig) is None
+    assert P.clean_draft("Her er utkastet:\nMatlaging er bra for utvikling og skolen.", orig) == \
+        "Matlaging er bra for utvikling og skolen."
+    assert P.clean_draft("Here is the draft:\n\"Cooking is good for kids.\"", "Cooking is very good for all kids.") == \
+        "Cooking is good for kids."
+
+
+def test_fallback_draft_nynorsk_long_sentences():
+    import random
+    sents = ["For det første lærer dei om ernæring, og dei får vite kvifor ulike matvarer er gode eller dårlege for helsa.",
+             "Å lære å lage mat er viktig for elevar av fleire grunnar.",
+             "Dei lærer òg at sunn mat er nødvendig for å ha nok energi.",
+             "Til slutt får dei eit verktøy for livet, og det gjer det enklare å lage mat for seg sjølv, familie og venner."]
+    for s in sents:
+        for seed in range(5):
+            d = P.fallback_draft(s, random.Random(seed))
+            assert d, s
+            assert 0.4 <= len(d) / len(s) <= 0.9
+            last = d.rstrip(".!?").split()[-1].lower()
+            assert last not in {"er", "at", "og", "å", "for", "i", "til", "om", "av"}, d

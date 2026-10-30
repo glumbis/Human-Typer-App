@@ -157,6 +157,7 @@ class AiWindow(ctk.CTkToplevel):
         tk.Label(lf, text=" words", font=f10, fg=T.DIM, bg=T.BG).pack(side="left")
         tk.Label(opts, text="LANGUAGE", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=1, column=0, sticky="w", pady=2)
         lang = self.cfg.get("language", "auto")
+        lang = prompts.LEGACY_LANG.get(lang, lang)
         self.lang_btn = Toggle(opts, list(prompts.LANGUAGES), lang if lang in prompts.LANGUAGES else "auto")
         self.lang_btn.grid(row=1, column=1, sticky="w", pady=2)
         tk.Label(opts, text="TONE", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=2, column=0, sticky="w", pady=2)
