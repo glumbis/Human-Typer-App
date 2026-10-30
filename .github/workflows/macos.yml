@@ -47,6 +47,12 @@ jobs:
       - name: Launch check (app must start and survive a UI smoke run without permissions)
         run: bash tools/mac_launch_check.sh dist/HumanTyper.app 30
       - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: launch-screenshots-${{ matrix.arch }}
+          path: launch-shots
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: crash-reports-${{ matrix.arch }}

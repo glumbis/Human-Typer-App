@@ -106,7 +106,11 @@ class HumanTyperApp(ctk.CTk):
 
     def _fit_to_screen(self):
         try:
-            fit_to_workarea(self, 800, 700, 760, 560, ctk.ScalingTracker.get_window_scaling(self))
+            # macOS draws the fonts 1.25x larger (T.MAC_SIZE_FACTOR), so the window grows with them;
+            # at 800x700 the command menu ran into the face column there. Identity on Windows.
+            k = T.size_factor()
+            fit_to_workarea(self, int(800 * k), int(700 * k), int(760 * k), int(560 * k),
+                            ctk.ScalingTracker.get_window_scaling(self))
         except Exception:
             pass
 
@@ -288,7 +292,13 @@ class HumanTyperApp(ctk.CTk):
         self._wpm_text(self.wpm_var.get())
         self._typo_text(self.typo_var.get())
         self._lay_id = None
+        self._lay_tries = 0
         cv.bind("<Configure>", self._schedule_layout, add="+")
+        # Do not rely on a later <Configure> alone: on macOS the canvas already got its final size
+        # while the widgets above were built (before this binding existed) and, as the window size
+        # never changes after that, no further event arrives -> the ghost layout never ran and only
+        # the opaque paste box was visible (v1.4.1).
+        self._schedule_layout()
 
     def _menu_row(self, add, r, name, widget, lab_w):
         add(GLabel(self._cv, self._dots(name), T.font(10), T.TEXT), 0, r)
@@ -320,10 +330,19 @@ class HumanTyperApp(ctk.CTk):
         try:
             mx, my, mw, mh = self.grid_bbox(0, 2)
             sx, sy, sw, sh = self.grid_bbox(0, 3, 1, 3)
-        except Exception:
+        except Exception as e:
+            self._layout_skip = f"grid_bbox failed: {e!r}"
             return
+        self._layout_bbox = ((mx, my, mw, mh), (sx, sy, sw, sh))
         if mw < 50 or sw < 50:
+            self._layout_skip = f"grid too small: menu={mw} status={sw}"
+            if self._lay_tries < 50:               # not laid out yet: try again shortly
+                self._lay_tries += 1
+                self._lay_id = self.after(100, self._layout)
             return
+        self._lay_tries = 0
+        self._layout_skip = None
+        self._layout_runs = getattr(self, "_layout_runs", 0) + 1
         f9 = T.font(9)
         cv = self._cv
         x0, y0 = mx + 10, my + 8
@@ -344,6 +363,8 @@ class HumanTyperApp(ctk.CTk):
         ly = by0 + f9.metrics("linespace") + 8
         self.status_pre.moveto(bx0 + 16, ly)
         self.status.moveto(bx0 + 16 + self.status_pre.width() + 8, ly)
+        self._status_room = bx1 - 12 - (bx0 + 16 + self.status_pre.width() + 8)
+        self._render_status()
         lh = T.font(11, True).metrics("linespace")
         by = ly + lh + 8
         self.bar.moveto(bx0 + 16, by + 2)
@@ -386,6 +407,7 @@ class HumanTyperApp(ctk.CTk):
             fv.x, fv.y = fx, fy
             fv._last = [None] * fv.rows
             cv.delete("face")
+            self._draw_face()          # repaint now: with ANIMATION off nothing else would
         face_h = fv.height()
         self.face_cap.moveto(fx, fy + face_h + 4)
         fy1 = fy + face_h + 6 + f8.metrics("linespace") + 6
@@ -635,8 +657,24 @@ class HumanTyperApp(ctk.CTk):
         self._render_status()
 
     def _render_status(self):
-        self.status.configure(text=self._status_text + ("█" if self._cursor_on else " "),
+        self.status.configure(text=self._fit_status(self._status_text) + ("█" if self._cursor_on else " "),
                               fg=self._status_color)
+
+    def _fit_status(self, text):
+        """Cut a status line that would run past the STATUS box (long macOS permission errors)."""
+        room = getattr(self, "_status_room", 0)
+        if room <= 0:
+            return text
+        key = (text, room)
+        if getattr(self, "_status_fit", (None, None))[0] != key:
+            f = T.font(11, True)
+            out = text
+            if f.measure(text + "█") > room:
+                while out and f.measure(out + "…█") > room:
+                    out = out[:-1]
+                out = out.rstrip() + "…"
+            self._status_fit = (key, out)
+        return self._status_fit[1]
 
     def _set_progress(self, pct):
         n = int(BAR_W * pct / 100)
@@ -970,10 +1008,76 @@ def run_smoke(app, log_path):
     app.after(1500, lambda: run(0))
 
 
+def diag_report(app):
+    """Layout/rendering facts for CI (`--diag <file>`): did the ghost layout run, is the backdrop
+    canvas sized and populated, and where did every real widget end up."""
+    def geo(w):
+        try:
+            return {"x": w.winfo_x(), "y": w.winfo_y(), "w": w.winfo_width(), "h": w.winfo_height(),
+                    "mapped": bool(w.winfo_ismapped()), "manager": w.winfo_manager()}
+        except Exception as e:
+            return {"error": repr(e)}
+
+    d = {"version": __version__, "windowingsystem": app.tk.call("tk", "windowingsystem"),
+         "tk": str(app.tk.call("info", "patchlevel")), "ctk": ctk.__version__,
+         "ctk_window_scaling": ctk.ScalingTracker.get_window_scaling(app),
+         "tk_scaling": float(app.tk.call("tk", "scaling")),
+         "geometry": app.geometry(), "state": app.state(),
+         "screen": [app.winfo_screenwidth(), app.winfo_screenheight()],
+         "root": geo(app), "canvas": geo(app._cv), "inp_panel": geo(app.inp_panel)}
+    try:
+        d["grid_size"] = list(app.grid_size())
+        d["grid_rows"] = [list(app.grid_bbox(0, r)) for r in range(4)]
+        d["children"] = {str(w): geo(w) for w in app.winfo_children()}
+        d["stacking"] = [str(w) for w in app.tk.call("winfo", "children", app._w)]
+    except Exception as e:
+        d["grid_error"] = repr(e)
+    cv = app._cv
+    d["canvas_items"] = len(cv.find_all())
+    d["canvas_bg_items"] = len(cv.find_withtag("bg"))
+    d["bg_grid"] = [app.bg.cols, app.bg.rows]
+    d["layout_runs"] = getattr(app, "_layout_runs", 0)
+    d["layout_skip"] = getattr(app, "_layout_skip", "never called")
+    d["layout_bbox"] = getattr(app, "_layout_bbox", None)
+    d["menu_box_bbox"] = cv.bbox(app.menu_box.tag)
+    d["status_box_bbox"] = cv.bbox(app.status_box.tag)
+    d["start_btn_bbox"] = app.start_btn.bbox()
+    d["errors"] = list(getattr(app, "_diag_errors", []))
+    return d
+
+
+def run_diag(app, path, delay=4000):
+    """Hidden `--diag <file>`: record Tk callback exceptions and write diag_report() as JSON."""
+    import json
+    import traceback
+    app._diag_errors = []
+    orig = app.report_callback_exception
+
+    def hook(exc, val, tb):
+        app._diag_errors.append("".join(traceback.format_exception(exc, val, tb)))
+        orig(exc, val, tb)
+    app.report_callback_exception = hook
+
+    def write():
+        try:
+            d = diag_report(app)
+        except Exception:
+            d = {"diag_error": traceback.format_exc()}
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=1, default=str)
+        except Exception:
+            pass
+    app.after(delay, write)
+
+
 def main(argv=None):
     import sys
     argv = sys.argv[1:] if argv is None else argv
     app = HumanTyperApp()
+    if "--diag" in argv:
+        i = argv.index("--diag")
+        run_diag(app, argv[i + 1] if i + 1 < len(argv) else "diag.json")
     if "--smoke" in argv:
         i = argv.index("--smoke")
         run_smoke(app, argv[i + 1] if i + 1 < len(argv) else "smoke.log")

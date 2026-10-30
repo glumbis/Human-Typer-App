@@ -19,26 +19,58 @@ The apps are not code-signed, so Windows SmartScreen may show "Windows protected
 
 ### macOS (11 Big Sur or newer)
 
-From the same Releases page:
+From the same Releases page (or the [website](https://glumbis.github.io/Human-Typer-App/), which walks you through it):
 
-- **`HumanTyper-x.y.z-mac-arm64.dmg`**: Apple Silicon (M1 and newer).
+- **`HumanTyper-x.y.z-mac-arm64.dmg`**: Apple Silicon (M1/M2/M3/M4).
 - **`HumanTyper-x.y.z-mac-x86_64.dmg`**: Intel Macs.
 
-Open the dmg and drag **Human Typer** onto **Applications**. The app is only ad-hoc signed (no paid Apple
-Developer ID), so on first launch macOS Gatekeeper blocks it: **right-click the app, choose Open, then Open** again.
-If macOS says the app is damaged or won't open, remove the quarantine flag once:
+Not sure which? Apple menu → **About This Mac**: *Chip: Apple M…* = arm64, *Processor: … Intel …* = x86_64.
 
-```
-xattr -dr com.apple.quarantine /Applications/HumanTyper.app
-```
+**A · Install**
 
-**Permissions.** To type into other apps Human Typer needs two permissions: open **System Settings -> Privacy &
-Security** and enable **Human Typer** under both **Accessibility** and **Input Monitoring**. **Quit and reopen the app
-after granting** (macOS only applies them on the next launch). If you rebuilt or updated the app and typing stops
-working, remove the old Human Typer entry in those lists and add it again.
+1. Download the dmg and wait for it to finish.
+2. Finder → **Downloads** → double-click the dmg. A small window opens.
+3. Drag the **Human Typer** icon onto the **Applications** folder icon (click **Replace** if asked).
+4. Close the window and eject "Human Typer" (⏏ in Finder's sidebar).
 
-**Hotkeys.** F8 / F9 as on Windows. On Mac laptop keyboards the top row defaults to media keys, so press
-**fn+F8** / **fn+F9** (or enable "Use F1, F2, etc. keys as standard function keys" in System Settings -> Keyboard).
+**B · Let macOS open it (first time only).** The app is only ad-hoc signed (no paid Apple Developer ID), so
+Gatekeeper blocks the first launch.
+
+5. Finder → **Applications** → double-click **Human Typer**.
+6. macOS says *"Human Typer" could not be verified*: click **Done**. **Never click "Move to Trash".**
+7. Apple menu → **System Settings** → **Privacy & Security**.
+8. Scroll down to **Security**: next to *"Human Typer" was blocked…* click **Open Anyway**.
+9. Enter your password / Touch ID, then **Open Anyway** / **Open**.
+   (macOS 12 and older: System Preferences → Security & Privacy → General → Open Anyway.)
+
+**C · Permissions** (without these it can't press keys for you)
+
+10. System Settings → **Privacy & Security → Accessibility**.
+11. Turn **Human Typer** on. Not listed? Click **+**, choose Applications → Human Typer → Open, then turn it on.
+12. Privacy & Security → **Input Monitoring**: turn **Human Typer** on the same way (needed for F8/F9).
+13. **Quit Human Typer (⌘Q) and open it again.** Permissions only apply after a restart.
+
+**D · Use it**
+
+14. Paste your text (or use **✦ AI WRITE**).
+15. Click into the place to type into (Google Docs, Pages, a web form…).
+16. Press **fn+F8** to start/stop and **fn+F9** to pause. Mac laptop F-keys are media keys unless you hold
+    **fn**; to use plain F8/F9 enable System Settings → Keyboard → Keyboard Shortcuts… → Function Keys →
+    *"Use F1, F2, etc. keys as standard function keys"*.
+
+**Troubleshooting**
+
+- *Nothing gets typed*: Accessibility is off or the app wasn't restarted (steps 10–13).
+- *fn+F8 does nothing*: Input Monitoring is off (step 12). The ▶ START button in the floating stats window works too.
+- *Stopped working after an update*: macOS treats each new build as a new app. In Accessibility and Input
+  Monitoring remove the old Human Typer with **−**, add the new one with **+**, turn it on, restart.
+- *"Damaged and can't be opened"* or no *Open Anyway* button: run this in Terminal, then open the app again:
+
+  ```
+  xattr -dr com.apple.quarantine /Applications/HumanTyper.app
+  ```
+
+- *Quits unexpectedly*: click **Report…** in the crash window and open an issue with that text.
 
 **Google Docs / browsers.** Use the verified-clipboard locate mode (the default `auto` falls back to it): Google Docs has
 no accessible text, so revisions find `first` through a Cmd+C round trip. Keep the browser tab focused while typing.

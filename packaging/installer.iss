@@ -1,7 +1,7 @@
 ; Inno Setup 6 script. Build with: ISCC.exe packaging\installer.iss   (run build step for dist\HumanTyper first)
-; Version can be overridden: ISCC /DAppVersion=1.4.1 packaging\installer.iss
+; Version can be overridden: ISCC /DAppVersion=1.4.2 packaging\installer.iss
 #ifndef AppVersion
-  #define AppVersion "1.4.1"
+  #define AppVersion "1.4.2"
 #endif
 #define AppName "Human Typer"
 #define AppExe "HumanTyper.exe"

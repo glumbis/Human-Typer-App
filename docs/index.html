@@ -132,7 +132,20 @@
   .macsteps b { color: var(--ice); }
   .macsteps i { color: var(--cyan); font-style: normal; }
   .macsteps .alt { margin: 4px 0 0; font-size: 13px; color: var(--dim); }
-  .macsteps code { color: var(--cyan); word-break: break-all; }
+  .macsteps code { color: var(--cyan); word-break: break-all; font-size: 14px; }
+  .macsteps .part {
+    margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 1px dashed rgba(255, 92, 200, 0.45);
+    color: var(--cyan); font-weight: 700; font-size: 15px; letter-spacing: .04em;
+  }
+  .macsteps .part:first-of-type { margin-top: 0; }
+  .macsteps small { display: block; margin-top: 4px; font-size: 14px; color: var(--dim); line-height: 1.4; }
+  .macsteps small b { color: var(--text); }
+  .trouble { margin-top: 14px; border-top: 1px dashed rgba(255, 92, 200, 0.45); padding-top: 10px; font-size: 15px; }
+  .trouble summary { cursor: pointer; color: var(--pink); font-weight: 700; }
+  .trouble ul { margin: 10px 0 0; padding-left: 20px; }
+  .trouble li { margin-bottom: 8px; }
+  .whichmac { color: var(--dim); font-size: 12.5px; margin-top: 4px; line-height: 1.5; }
+  .whichmac b { color: var(--text); font-weight: 400; }
   @media (max-width: 520px) { .macsteps { font-size: 16px; } }
   [hidden] { display: none !important; }
   .note { color: var(--dim); font-size: 12px; margin-top: 14px; }
@@ -175,6 +188,9 @@
         <span class="opts" id="builds" role="radiogroup" aria-label="Your computer"></span>
       </div>
       <div class="hint" id="hint"></div>
+      <div class="whichmac">Which Mac do I have? Click the <b>Apple menu</b> (top-left) → <b>About This Mac</b>.
+        If it says <b>Chip: Apple M1/M2/M3/M4…</b> pick <b>MAC M1/M2/M3/M4</b>. If it says
+        <b>Processor: … Intel …</b> pick <b>MAC INTEL</b>.</div>
     </div>
 
     <div class="dl-wrap">
@@ -183,15 +199,75 @@
     </div>
 
     <div class="macsteps" id="macsteps" hidden>
-      <p class="head">ON A MAC, DO THIS:</p>
+      <p class="head">ON A MAC, DO THIS (about 3 minutes):</p>
+
+      <p class="part">A · INSTALL</p>
       <ol>
-      <li><b>Open the downloaded .dmg</b> and drag <b>Human Typer</b> into <b>Applications</b>.</li>
-      <li><b>Open Human Typer</b> from Applications. macOS says it <i>“could not be verified”</i> and may offer <i>Move to Trash</i>: click <b>Done</b>. Do <b>not</b> move it to the Trash.</li>
-      <li>Open <b>System Settings → Privacy &amp; Security</b>, scroll down, click <b>Open Anyway</b> next to Human Typer, and confirm.</li>
-      <li>Allow <b>Accessibility</b> and <b>Input Monitoring</b> for Human Typer (System Settings → Privacy &amp; Security), then <b>restart the app</b>.</li>
-      <li>Click into any text box and press <b>fn + F8</b> to start typing.</li>
+        <li>Click the download button above. Wait until the download finishes (the arrow in the top-right of
+          Safari/Chrome stops spinning).</li>
+        <li>Open <b>Finder</b> → <b>Downloads</b> and <b>double-click</b> the file
+          <i>HumanTyper-…-mac-….dmg</i>. A small window opens.</li>
+        <li>In that window, <b>drag the Human Typer icon onto the Applications folder</b> icon next to it.
+          <small>If it asks to replace an older version, click <b>Replace</b>.</small></li>
+        <li>Close the window. In Finder's sidebar, click the <b>eject ⏏</b> button next to “Human Typer”.</li>
       </ol>
-      <p class="alt">Terminal alternative for steps 2–3: <code>xattr -dr com.apple.quarantine /Applications/HumanTyper.app</code></p>
+
+      <p class="part">B · LET macOS OPEN IT (only the first time)</p>
+      <ol start="5">
+        <li>Open <b>Finder</b> → <b>Applications</b> and <b>double-click Human Typer</b>.</li>
+        <li>macOS shows <i>“Human Typer” could not be verified</i> (or <i>…cannot be opened because the developer
+          cannot be verified</i>). Click <b>Done</b> (or <b>OK</b>).
+          <small><b>Never click “Move to Trash”.</b> The warning only means the app isn't signed with a paid Apple
+          developer certificate.</small></li>
+        <li>Click the <b>Apple menu</b> (top-left) → <b>System Settings</b> → <b>Privacy &amp; Security</b>
+          (in the left list).</li>
+        <li><b>Scroll all the way down</b> to the <b>Security</b> section. You'll see
+          <i>“Human Typer” was blocked to protect your Mac</i>. Click <b>Open Anyway</b>.</li>
+        <li>Type your Mac password (or use Touch ID), then click <b>Open Anyway</b> / <b>Open</b> in the next box.
+          Human Typer starts.
+          <small>Older macOS (Monterey 12 and earlier): Apple menu → <b>System Preferences</b> →
+          <b>Security &amp; Privacy</b> → <b>General</b> tab → <b>Open Anyway</b>.</small></li>
+      </ol>
+
+      <p class="part">C · GIVE IT PERMISSION TO TYPE</p>
+      <ol start="10">
+        <li>Human Typer needs two switches turned on, or it can't press keys for you. Go to
+          <b>System Settings → Privacy &amp; Security → Accessibility</b>.</li>
+        <li>Find <b>Human Typer</b> in the list and turn its switch <b>on</b> (enter your password if asked).
+          <small>Not in the list? Click <b>+</b> at the bottom, choose <b>Applications → Human Typer</b>, click
+          <b>Open</b>, then turn it on.</small></li>
+        <li>Go back to <b>Privacy &amp; Security</b> → <b>Input Monitoring</b> and turn <b>Human Typer</b> on the
+          same way. This is what makes the F8/F9 keys work.</li>
+        <li><b>Quit Human Typer</b> (click it, then press <b>⌘ Command + Q</b>) and <b>open it again</b> from
+          Applications. Permissions only take effect after a restart.</li>
+      </ol>
+
+      <p class="part">D · USE IT</p>
+      <ol start="14">
+        <li>Paste your text into Human Typer (or press <b>✦ AI WRITE</b> to have it written for you).</li>
+        <li>Click into the place you want it typed, like a Google Doc, Pages or a website text box.</li>
+        <li>Press <b>fn + F8</b> to start or stop, and <b>fn + F9</b> to pause.
+          <small>On Mac laptops the F-keys control brightness and volume unless you hold <b>fn</b>. To use plain
+          F8/F9: System Settings → <b>Keyboard</b> → <b>Keyboard Shortcuts…</b> → <b>Function Keys</b> → turn on
+          <b>“Use F1, F2, etc. keys as standard function keys”</b>.</small></li>
+      </ol>
+
+      <details class="trouble">
+        <summary>Something's wrong? (click here)</summary>
+        <ul>
+          <li><b>Nothing gets typed:</b> Accessibility is off, or the app wasn't restarted. Re-do steps 10–13.</li>
+          <li><b>fn+F8 does nothing:</b> Input Monitoring is off (step 12), or press the <b>▶ START</b> button in the
+            small floating stats window instead.</li>
+          <li><b>Updated from an older version and it stopped working:</b> macOS treats every new version as a new
+            app. In <b>Accessibility</b> and <b>Input Monitoring</b>, select the old Human Typer, click <b>−</b> to
+            remove it, then add the new one with <b>+</b> and turn it on.</li>
+          <li><b>“Damaged and can't be opened”</b> or no <i>Open Anyway</i> button: open the <b>Terminal</b> app,
+            paste <code>xattr -dr com.apple.quarantine /Applications/HumanTyper.app</code>, press Return, and
+            open the app again.</li>
+          <li><b>It quits unexpectedly:</b> in the crash window click <b>Report…</b>, copy the text and send it to
+            us via the GitHub page below.</li>
+        </ul>
+      </details>
     </div>
 
     <div class="status" aria-live="polite">
@@ -216,7 +292,7 @@
   var RELEASES_PAGE = "https://github.com/" + REPO + "/releases";
   var NOTE_WIN = "Unsigned app: if Windows SmartScreen appears, click <b>More info → Run anyway</b>. No admin rights needed.";
   var NOTE_MAC = "The “could not be verified” warning is normal: the app isn't signed with a paid Apple certificate. " +
-                 "Follow the steps above.";
+                 "Follow steps A–D above, in order.";
   // id, button label, file pattern, platform, size/requirement note
   var BUILDS = [
     { id: "win-setup", label: "WINDOWS", re: /setup.*\.exe$/i, os: "windows", req: "Windows 10/11 installer",
