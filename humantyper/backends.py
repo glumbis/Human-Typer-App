@@ -76,6 +76,22 @@ class PynputBackend:
         """Copy (Ctrl/Cmd+C)."""
         self._combo([self._mod(plat.CMD_KEY)], "c")
 
+    def select_all(self) -> None:
+        """Select the whole text: Ctrl+A; macOS: Cmd+Up then Cmd+Shift+Down (arrow key codes do not
+        depend on the keyboard layout - the A key code is Q on AZERTY, and Cmd+Q quits)."""
+        if plat.IS_MAC:
+            self._combo([self._mod(plat.CMD_KEY)], self._Key.up)
+            self._combo([self._mod(plat.CMD_KEY), self._Key.shift], self._Key.down)
+        else:
+            self._combo([self._Key.ctrl], "a")
+
+    def caret_to_end(self) -> None:
+        """Caret to the end of the text, collapsing any selection (Ctrl+End / Cmd+Down)."""
+        if plat.IS_MAC:
+            self._combo([self._mod(plat.CMD_KEY)], self._Key.down)
+        else:
+            self._combo([self._Key.ctrl], self._Key.end)
+
     def clipboard_seq(self) -> int:
         from . import clipboard
         return clipboard.sequence_number()
@@ -210,6 +226,13 @@ class QuartzBackend(PynputBackend):
 
     def copy(self) -> None:
         self._combo(["cmd"], "c")
+
+    def select_all(self) -> None:
+        self._combo(["cmd"], "up")              # not Cmd+A: key codes are layout positions
+        self._combo(["cmd", "shift"], "down")
+
+    def caret_to_end(self) -> None:
+        self._combo(["cmd"], "down")
 
 
 def make_backend():
@@ -399,6 +422,16 @@ class FakeBackend:
         if self.sel is None:
             self.sel = self.cursor
         self.cursor = self._prev_word()
+
+    def select_all(self) -> None:
+        self._tick()
+        self.sel = 0
+        self.cursor = len(self.buf)
+
+    def caret_to_end(self) -> None:
+        self._tick()
+        self.sel = None
+        self.cursor = len(self.buf)
 
     def copy(self) -> None:
         self._tick()

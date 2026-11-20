@@ -16,6 +16,7 @@ from .winutil import fit_to_workarea
 from ..ai import engine as eng
 from ..ai import models as mdl
 from ..ai import prompts
+from ..ai import rewrite
 from ..ai import settings as ai_settings
 from . import theme as T
 from .widgets import Panel, TextButton, Toggle
@@ -25,29 +26,33 @@ _window: Optional["AiWindow"] = None
 INSTALL_MORE = "install more models..."
 
 
-def open_ai_window(master, on_use_text: Callable[[str], None]) -> None:
-    """Open the AI writer (or focus it if already open). on_use_text(text) replaces the paste box."""
+def open_ai_window(master, on_use_text: Callable[[str], None],
+                   on_review: Optional[Callable[[], None]] = None) -> None:
+    """Open the AI writer (or focus it if already open). on_use_text(text) replaces the paste box;
+    on_review() starts REVIEW FIELD (IMPROVE mode button)."""
     global _window
     if _window is not None:
         try:
             if _window.winfo_exists():
                 _window.on_use_text = on_use_text
+                _window.on_review = on_review
+                _window._apply_mode()
                 _window.deiconify()
-                _window.lift()
-                _window.focus_force()
+                _window._raise_above_master()
                 return
         except tk.TclError:
             pass
         _window = None
-    _window = AiWindow(master, on_use_text)
+    _window = AiWindow(master, on_use_text, on_review)
 
 
 class AiWindow(ctk.CTkToplevel):
-    def __init__(self, master, on_use_text):
+    def __init__(self, master, on_use_text, on_review=None):
         super().__init__(master, fg_color=T.BG)
         if T._family is None:
             T.init_fonts(self)
         self.on_use_text = on_use_text
+        self.on_review = on_review
         self.engine = eng.get_engine()
         self.cfg = self.engine.settings          # shared with the engine (force_cpu etc.)
         self.events: "queue.Queue[tuple]" = queue.Queue()
@@ -59,6 +64,12 @@ class AiWindow(ctk.CTkToplevel):
         self.engine_text = "stopped"
         self.last_tps = 0.0
         self._closing = False
+        self._topmost = None                   # last -topmost state mirrored from the main window
+        self._ticks = 0
+        mode = self.cfg.get("mode", "write")
+        self.mode = mode if mode in ("write", "improve") else "write"
+        self._mode_text = {"write": "", "improve": ""}   # each mode keeps its own prompt box text
+        self._job = "write"
 
         self.title("Human Typer - AI WRITE")
         self.configure(bg=T.BG)
@@ -75,8 +86,48 @@ class AiWindow(ctk.CTkToplevel):
         self._sync_engine_text()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.after(40, self._poll)
-        self.lift()
-        self.focus_force()
+        self._raise_above_master()
+        # customtkinter withdraws/redraws a new toplevel on Windows (title bar colour) right after
+        # creation, which can drop it behind the main window again: re-raise once that settled
+        self.after(80, lambda: self._raise_above_master(focus=False))
+        self.after(450, lambda: self._raise_above_master(focus=False))
+
+    # ---- z-order ---------------------------------------------------------
+    # The main window can be ALWAYS ON TOP; a normal window can never get above a topmost one, so
+    # this window mirrors the main window's -topmost (checked in _poll, so toggling it while this
+    # window is open follows). No transient(): that would hide this window with the main window and
+    # drop its taskbar button / minimize box on Windows.
+    def _master_topmost(self) -> bool:
+        # NOT master.attributes("-topmost"): on Windows (Tk 8.6) even that query re-applies
+        # HWND_TOPMOST and lifts the main window back over this one. The all-attributes form is
+        # read-only on every platform.
+        try:
+            m = self.master
+            a = m.tk.splitlist(m.tk.call("wm", "attributes", str(m)))
+            return bool(int(dict(zip(a[::2], a[1::2])).get("-topmost", 0)))
+        except Exception:
+            return False
+
+    def _sync_topmost(self):
+        top = self._master_topmost()
+        if top != self._topmost:               # only on change: re-asserting would keep jumping us up
+            self._topmost = top
+            try:
+                self.attributes("-topmost", top)
+            except tk.TclError:
+                pass
+
+    def _raise_above_master(self, focus=True):
+        try:
+            if not self.winfo_exists():
+                return
+            self._topmost = self._master_topmost()
+            self.attributes("-topmost", self._topmost)   # (re)setting it puts us on top of the topmost band
+            self.lift()
+            if focus:
+                self.focus_force()
+        except tk.TclError:
+            pass
 
     def _set_icon(self):
         if plat.IS_MAC:
@@ -94,6 +145,13 @@ class AiWindow(ctk.CTkToplevel):
         f9, f10 = T.font(9), T.font(10)
         tk.Label(self, text="// local ai writer  ::  runs on this PC, nothing is sent anywhere //",
                  font=f9, fg=T.DIM, bg=T.BG, anchor="w").pack(fill="x", padx=14, pady=(10, 4))
+        mrow = tk.Frame(self, bg=T.BG)
+        mrow.pack(fill="x", padx=14, pady=(0, 6))
+        tk.Label(mrow, text="MODE", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).pack(side="left")
+        self.mode_btn = Toggle(mrow, ["write", "improve"], self.mode, command=self._set_mode, fnt=T.font(11, True))
+        self.mode_btn.pack(side="left")
+        self.mode_hint = tk.Label(mrow, text="", font=f9, fg=T.DIM, bg=T.BG, anchor="w")
+        self.mode_hint.pack(side="left", padx=(6, 0))
 
         # model ----------------------------------------------------------
         mp = Panel(self, "MODEL", f9)
@@ -130,6 +188,7 @@ class AiWindow(ctk.CTkToplevel):
         # prompt ---------------------------------------------------------
         pp = Panel(self, "PROMPT // write about...", f9)
         pp.pack(fill="x", padx=10, pady=(8, 0))
+        self.prompt_panel = pp
         self.prompt = ctk.CTkTextbox(
             pp.body, wrap="word", height=60, font=ctk.CTkFont(family=T.font().actual("family"), size=T.scale_size(13)),
             fg_color=T.INPUT_BG, text_color=T.TEXT, border_width=1, border_color=T.LINE, corner_radius=0,
@@ -142,29 +201,34 @@ class AiWindow(ctk.CTkToplevel):
         opts = tk.Frame(pp.body, bg=T.BG)
         opts.pack(fill="x", pady=(8, 0))
         opts.columnconfigure(1, weight=1)
-        tk.Label(opts, text="LENGTH", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=0, column=0, sticky="w")
+
+        def lbl(text, row, **kw):
+            w = tk.Label(opts, text=text, font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9)
+            w.grid(row=row, column=0, sticky="w", **kw)
+            return w
+        len_lbl = lbl("LENGTH", 0)
         length = int(self.cfg.get("length", 250))
         self.len_var = tk.DoubleVar(value=float(min(800, max(50, length))))
-        ctk.CTkSlider(opts, from_=50, to=800, number_of_steps=75, variable=self.len_var,
+        len_slider = ctk.CTkSlider(opts, from_=50, to=800, number_of_steps=75, variable=self.len_var,
                       command=lambda v: self._len_text(), height=14, corner_radius=0, button_corner_radius=0,
                       button_length=6, fg_color=T.BG3, progress_color=T.VIOLET, button_color=T.CYAN,
-                      button_hover_color=T.PINK, bg_color=T.BG, border_width=0
-                      ).grid(row=0, column=1, sticky="we", padx=(0, 10), pady=3)
+                      button_hover_color=T.PINK, bg_color=T.BG, border_width=0)
+        len_slider.grid(row=0, column=1, sticky="we", padx=(0, 10), pady=3)
         lf = tk.Frame(opts, bg=T.BG)
         lf.grid(row=0, column=2, sticky="w")
         self.len_entry = self._num_entry(lf, length)          # any number, the slider is just a shortcut
         self.len_entry.pack(side="left")
         tk.Label(lf, text=" words", font=f10, fg=T.DIM, bg=T.BG).pack(side="left")
-        tk.Label(opts, text="LANGUAGE", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=1, column=0, sticky="w", pady=2)
+        lbl("LANGUAGE", 1, pady=2)
         lang = self.cfg.get("language", "auto")
         lang = prompts.LEGACY_LANG.get(lang, lang)
         self.lang_btn = Toggle(opts, list(prompts.LANGUAGES), lang if lang in prompts.LANGUAGES else "auto")
         self.lang_btn.grid(row=1, column=1, sticky="w", pady=2)
-        tk.Label(opts, text="TONE", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=2, column=0, sticky="w", pady=2)
+        tone_lbl = lbl("TONE", 2, pady=2)
         tone = self.cfg.get("tone", "neutral")
         self.tone_btn = Toggle(opts, list(prompts.TONES), tone if tone in prompts.TONES else "neutral")
         self.tone_btn.grid(row=2, column=1, sticky="w", pady=2)
-        tk.Label(opts, text="REVISIONS", font=f10, fg=T.DIM, bg=T.BG, anchor="w", width=9).grid(row=3, column=0, sticky="w", pady=2)
+        rev_lbl = lbl("REVISIONS", 3, pady=2)
         revs = str(self.cfg.get("revisions", "3"))
         self.rev_btn = Toggle(opts, list(prompts.REVISION_COUNTS), revs if revs in prompts.REVISION_COUNTS else "",
                               command=lambda v: self._set_entry(self.rev_entry, v))
@@ -175,6 +239,23 @@ class AiWindow(ctk.CTkToplevel):
         self.rev_entry.pack(side="left")
         tk.Label(rf, text=" pairs", font=f10, fg=T.DIM, bg=T.BG).pack(side="left")
         self.rev_entry.bind("<KeyRelease>", lambda e: self.rev_btn.set(self.rev_entry.get().strip()))
+        self._write_rows = [len_lbl, len_slider, lf, tone_lbl, self.tone_btn, rev_lbl, self.rev_btn, rf]
+
+        # IMPROVE options (same grid, shown instead of LENGTH / TONE / REVISIONS)
+        style_lbl = lbl("STYLE", 4, pady=2)
+        style = self.cfg.get("improve_style", "clearer")
+        self.style_btn = Toggle(opts, list(prompts.IMPROVE_STYLES),
+                                style if style in prompts.IMPROVE_STYLES else "clearer",
+                                command=lambda v: self._info(f"{v}: {prompts.IMPROVE_HINTS.get(v, '')}"))
+        self.style_btn.grid(row=4, column=1, columnspan=2, sticky="w", pady=2)
+        revise_lbl = lbl("REVISE", 5, pady=2)
+        rvf = tk.Frame(opts, bg=T.BG)
+        rvf.grid(row=5, column=1, columnspan=2, sticky="w", pady=2)
+        self.revise_btn = Toggle(rvf, ["on", "off"], "on" if self.cfg.get("improve_revise", True) else "off")
+        self.revise_btn.pack(side="left")
+        tk.Label(rvf, text="types your wording first, then edits it into the better version", font=f9,
+                 fg=T.DIM, bg=T.BG).pack(side="left", padx=(4, 0))
+        self._improve_rows = [style_lbl, self.style_btn, revise_lbl, rvf]
 
         bar = tk.Frame(self, bg=T.BG)
         bar.pack(fill="x", padx=14, pady=(8, 0))
@@ -184,6 +265,11 @@ class AiWindow(ctk.CTkToplevel):
         self.stop_btn.pack(side="left", padx=(12, 0))
         self.stop_btn.set_enabled(False)
         tk.Label(bar, text="Ctrl+Enter", font=T.font(8), fg=T.DIM, bg=T.BG).pack(side="left", padx=(12, 0))
+        # IMPROVE mode: review the text you wrote in another app, right in its field
+        self.review_btn = TextButton(bar, f"[ {macutil.review_hotkey_label()} REVIEW FIELD ]", self._review_field,
+                                     fnt=T.font(11, True), color=T.LAVENDER)
+        self.review_hint = tk.Label(bar, text="improve the text in another app's field", font=T.font(8),
+                                    fg=T.DIM, bg=T.BG)
         self.msg_lbl = tk.Label(self, text="", font=f10, fg=T.DIM, bg=T.BG, anchor="w", justify="left",
                                 wraplength=680)
         self.msg_lbl.pack(fill="x", padx=14, pady=(4, 0))
@@ -210,6 +296,54 @@ class AiWindow(ctk.CTkToplevel):
         self.clear_btn.pack(side="left", padx=(12, 0))
         self.count_lbl = tk.Label(bot, text="", font=f9, fg=T.DIM, bg=T.BG)
         self.count_lbl.pack(side="right")
+        self._apply_mode()
+
+    # ---- WRITE / IMPROVE -------------------------------------------------
+    def _set_mode(self, mode):
+        if self.busy or mode == self.mode:
+            self.mode_btn.set(self.mode)
+            return
+        self._mode_text[self.mode] = self.prompt.get("1.0", "end-1c")
+        self.mode = mode
+        self.prompt.delete("1.0", "end")
+        self.prompt.insert("1.0", self._mode_text.get(mode, ""))
+        self.cfg["mode"] = mode
+        self._apply_mode()
+        self._info("")
+
+    def _apply_mode(self):
+        improve = self.mode == "improve"
+        self.prompt_panel.set_title("TEXT // paste your text" if improve else "PROMPT // write about...")
+        self.prompt.configure(height=130 if improve else 60)
+        for w in self._write_rows:
+            w.grid_remove() if improve else w.grid()
+        for w in self._improve_rows:
+            w.grid() if improve else w.grid_remove()
+        self.gen_btn.configure(text="[ IMPROVE ]" if improve else "[ GENERATE ]")
+        if improve and self.on_review is not None:
+            self.review_btn.pack(side="right")
+            self.review_hint.pack(side="right", padx=(0, 6))
+        else:
+            self.review_btn.pack_forget()
+            self.review_hint.pack_forget()
+        self.mode_hint.configure(text="paste text, get a better version" if improve
+                                 else "write a new text about a topic")
+
+    def _review_field(self):
+        """[ REVIEW FIELD ]: the main window reads the field you click into (3 s countdown) and
+        improves it with the model, language and style chosen here."""
+        if self.on_review is None:
+            return
+        if self.busy:
+            self._info("Wait until the AI has finished here (or STOP it).", T.PINK)
+            return
+        path = self._selected_path()
+        self.cfg.update(language=self.lang_btn.get(), improve_style=self.style_btn.get() or "clearer")
+        if path:
+            self.cfg["model"] = path
+        self._save_cfg()
+        self._info("REVIEW: click into the text you want reviewed (3 s), see the main window.", T.ACCENT)
+        self.on_review()
 
     def _num_entry(self, master, value):
         e = tk.Entry(master, width=6, font=T.font(10, True), bg=T.INPUT_BG, fg=T.ACCENT, relief="flat",
@@ -417,9 +551,11 @@ class AiWindow(ctk.CTkToplevel):
     def _generate(self):
         if self.busy:
             return
+        improve = self.mode == "improve"
         prompt = self.prompt.get("1.0", "end").strip()
         if not prompt:
-            self._info("Write what the text should be about first.", T.PINK)
+            self._info("Paste the text to improve first." if improve
+                       else "Write what the text should be about first.", T.PINK)
             return
         if not self.engine.available():
             self._info(eng.MISSING_MSG, T.ERR)
@@ -430,6 +566,10 @@ class AiWindow(ctk.CTkToplevel):
             self._info("No model installed yet. Pick one in the model manager below and press INSTALL.", T.PINK)
             self._open_manager(True)
             return
+        if improve:
+            self._start_improve(path, prompt)
+            return
+        self._job = "write"
         words = self._words()
         msgs = prompts.build_messages(prompt, words, self.lang_btn.get(), self.tone_btn.get(),
                                       self._selected_name())
@@ -492,6 +632,82 @@ class AiWindow(ctk.CTkToplevel):
         if pairs and not self._cancelled:
             q.put(("replace", prompts.apply_revisions(text, pairs), len(pairs)))
 
+    def _start_improve(self, path, text):
+        style, lang = self.style_btn.get() or "clearer", self.lang_btn.get()
+        revise = self.revise_btn.get() == "on"
+        self.cfg.update(language=lang, model=path, mode="improve", improve_style=style, improve_revise=revise)
+        self._save_cfg()
+        self._job = "improve"
+        self._improve_stats = {}
+        self.out.delete("1.0", "end")
+        self.last_tps = 0.0
+        self._set_busy(True)
+        self._info("working...", T.DIM)
+        self._cancelled = False
+        threading.Thread(target=self._improve_worker, args=(path, text, style, lang, self._selected_name(), revise),
+                         daemon=True).start()
+
+    def _improve_worker(self, path, text, style, lang, name, revise):
+        q = self.events
+        clock = {"t0": None, "n": 0}
+
+        def chunk(piece):
+            if clock["t0"] is None:
+                clock["t0"] = time.monotonic()
+            clock["n"] += 1
+            q.put(("chunk", piece, clock["n"] / max(time.monotonic() - clock["t0"], 0.3)))
+
+        def progress(k, n, so_far):                 # finished text so far; the next paragraph streams after it
+            clock.update(t0=None, n=0)
+            q.put(("progress", so_far, f"improving paragraph {k + 1}/{n}..." if k < n else ""))
+
+        try:
+            self.engine.ensure_started(path)
+            q.put(("engine", f"ready ({self.engine.mode})"))
+            stats = {}
+            out = rewrite.improve_text(self.engine, None, text, style, lang, name, on_chunk=chunk,
+                                       cancelled=lambda: self._cancelled, on_progress=progress, stats=stats)
+            k = 0
+            if revise and out != text and not self._cancelled:
+                marked, k = prompts.build_revision_text(text, out)
+                if k:
+                    q.put(("replace", marked, k))
+            self._improve_stats = dict(stats, pairs=k, changed=out != text, revise=revise)
+            q.put(("done", self.engine.last_tps, ""))
+        except eng.EngineError as e:
+            q.put(("done", 0.0, f"{e.kind}:{e}"))
+        except Exception as e:
+            q.put(("done", 0.0, f"server:{e}"))
+
+    def _ev_progress(self, text, msg):
+        self.out.delete("1.0", "end")
+        self.out.insert("1.0", text)
+        self.out.see("end")
+        if msg:
+            self._info(msg)
+        self._update_count()
+
+    def _improve_done_text(self):
+        st, self._improve_stats = getattr(self, "_improve_stats", {}) or {}, {}
+        self._revs_added = self._revs_wanted = 0
+        total, done, kept, k = st.get("paragraphs", 0), st.get("done", 0), st.get("kept", 0), st.get("pairs", 0)
+        if self._cancelled:
+            return f"stopped - {done - kept} of {total} paragraphs improved, the rest kept as you wrote it."
+        if not total:
+            return "Nothing to improve (needs at least a few words)."
+        if not st.get("changed"):
+            if kept == done:
+                return "The model's answers were unusable, your text was kept. Try again or another model."
+            return "No changes - the text already looks fine in this style."
+        msg = f"done - {done - kept} of {total} paragraph{'s' if total != 1 else ''} improved"
+        if kept:
+            msg += f" ({kept} kept as you wrote {'them' if kept != 1 else 'it'})"
+        if k:
+            msg += f", typed as {k} [yours][improved] revision{'s' if k != 1 else ''}"
+        elif st.get("revise"):
+            msg += " (no sentence-level revisions found, typed as improved)"
+        return msg + ". Edit if you like, then USE -> PASTE BOX."
+
     def _ev_replace(self, text, k):
         self.out.delete("1.0", "end")
         self.out.insert("1.0", text)
@@ -515,6 +731,9 @@ class AiWindow(ctk.CTkToplevel):
             pass
         except tk.TclError:
             return
+        self._ticks += 1
+        if self._ticks % 5 == 0:                    # follow the main window's ALWAYS ON TOP (~5x a second)
+            self._sync_topmost()
         self.after(40, self._poll)
 
     def _ev_engine(self, text):
@@ -544,6 +763,8 @@ class AiWindow(ctk.CTkToplevel):
             elif kind == "missing":
                 self._paint_status()
             self.engine_text = "stopped" if not self.engine.running() else self.engine_text
+        elif self._job == "improve":
+            self._info(self._improve_done_text(), T.ACCENT)
         else:
             text = self.out.get("1.0", "end").strip()
             k = getattr(self, "_revs_added", 0)
@@ -619,7 +840,9 @@ class AiWindow(ctk.CTkToplevel):
             st["cancel"].set()
         self.engine.on_state = None
         try:
-            self.cfg.update(length=self._words(), language=self.lang_btn.get(), tone=self.tone_btn.get())
+            self.cfg.update(length=self._words(), language=self.lang_btn.get(), tone=self.tone_btn.get(),
+                            mode=self.mode, improve_style=self.style_btn.get() or "clearer",
+                            improve_revise=self.revise_btn.get() == "on")
             ai_settings.save(self.cfg)
         except Exception:
             pass

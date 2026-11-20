@@ -29,6 +29,11 @@ def hotkey_labels():
     return ("fn+F8", "fn+F9") if plat.IS_MAC else ("F8", "F9")
 
 
+def review_hotkey_label():
+    """REVIEW FIELD hotkey as printed on screen."""
+    return "fn+F10" if plat.IS_MAC else "F10"
+
+
 # ---- permissions ---------------------------------------------------------------
 def ax_trusted(prompt=False):
     """True/False if the process may control the computer (Accessibility); None when unknown/not mac."""

@@ -40,6 +40,45 @@ class Stopped(Exception):
 
 
 @dataclass
+class Erase:
+    """What the user did in the target app while typing was paused (reported by a guard).
+
+    count:   characters the user added at the caret -> pressed away with Backspace on resume
+    restore: characters of OUR text the user deleted beyond what they added -> re-typed afterwards
+    trusted: False when the caret may have moved (arrows, mouse click, editing shortcut...): then
+             nothing is erased, only `reason` is logged"""
+    count: int = 0
+    restore: int = 0
+    trusted: bool = True
+    reason: str = ""
+
+
+class Guard:
+    """Optional hooks a TypingEngine calls (TypingEngine(..., guard=obj)). Every method is optional;
+    they are called from the engine thread or from the thread calling pause()/resume()/stop().
+
+    engine_state(state): "start" (a run begins, keystrokes flow), "typing" (resumed), "paused",
+                         "idle" (finished / stopped / crashed)
+    take_erase() -> Erase | None: asked by the engine thread when it leaves the pause loop
+    give_back(erase):    paused again before the engine finished erasing: the rest of it
+    focus_lost() -> str | None: polled every `guard_interval` s while typing (and before erasing);
+                         a reason string pauses the typing (keys would land in the wrong window)
+    hotkeys.KeyGuard implements this; this base class is a no-op reference implementation."""
+
+    def engine_state(self, state: str) -> None:
+        pass
+
+    def take_erase(self) -> Optional[Erase]:
+        return None
+
+    def give_back(self, erase: Erase) -> None:
+        pass
+
+    def focus_lost(self) -> Optional[str]:
+        return None
+
+
+@dataclass
 class Settings:
     wpm: float = 60.0
     typo_rate: float = 0.02          # fraction 0..0.10
@@ -109,8 +148,12 @@ class TypingEngine:
                  on_finish: Optional[Callable[[str], None]] = None,
                  sleep: Callable[[float], None] = time.sleep,
                  on_log: Optional[Callable[[str], None]] = None,
-                 on_char: Optional[Callable[[str], None]] = None):
+                 on_char: Optional[Callable[[str], None]] = None,
+                 guard=None):
         self.on_log = on_log
+        self.guard = guard                  # optional Guard (keyboard guard / focus guard)
+        self.guard_interval = 0.15          # seconds between guard.focus_lost() polls
+        self._guard_t = 0.0
         self.on_char = on_char
         self.backend = backend
         self.settings = settings or Settings()
@@ -121,11 +164,16 @@ class TypingEngine:
         self._stop = threading.Event()
         self._resume = threading.Event()
         self._resume.set()
+        self._ctl = threading.RLock()
         self._thread: Optional[threading.Thread] = None
         self.error: Optional[str] = None    # traceback of the last crash of the typing thread
         self._kind = "idle"
         self._buf: List[str] = []
         self._cur = 0
+        self._edit_mode = False             # run_edit: the text was already in the field
+        self._rev_tag = "REV"
+        self._applied = 0
+        self.edit_result = (0, 0)           # run_edit: (applied, total) of the last edit run
         self._clip_verified: set = set()    # clipboard methods whose Left-collapse was verified this run
 
     # ---- control --------------------------------------------------------
@@ -145,15 +193,33 @@ class TypingEngine:
         self._thread = threading.Thread(target=self._thread_main, args=(text,), daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
-        self._stop.set()
+    def start_edit(self, original: str, edits) -> None:
+        """run_edit() on the typing thread (on_finish gets "done" / "stopped" / "error")."""
+        if self.running:
+            return
+        self._stop.clear()
         self._resume.set()
+        self._thread = threading.Thread(target=self._thread_main, args=(None, (original, edits)),
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        with self._ctl:
+            self._stop.set()
+            self._resume.set()
+            self._guard_call("engine_state", "idle")
 
     def pause(self) -> None:
-        self._resume.clear()
+        with self._ctl:                     # pause/resume + guard state change as one step
+            self._resume.clear()
+            if not self._stop.is_set():
+                self._guard_call("engine_state", "paused")   # release the keyboard at once
 
     def resume(self) -> None:
-        self._resume.set()
+        with self._ctl:
+            if not self._stop.is_set():
+                self._guard_call("engine_state", "typing")   # block again before any key is sent
+            self._resume.set()
 
     def toggle_pause(self) -> None:
         if self.paused:
@@ -161,15 +227,20 @@ class TypingEngine:
         else:
             self.pause()
 
-    def _thread_main(self, text: str) -> None:
+    def _thread_main(self, text: Optional[str], edit=None) -> None:
         result = "error"
         try:
-            result = "done" if self.run(text, _reset_flags=False) else "stopped"
+            if edit is not None:
+                ok = self.run_edit(edit[0], edit[1], _reset_flags=False)
+            else:
+                ok = self.run(text, _reset_flags=False)
+            result = "done" if ok else "stopped"
         except Exception:
             import traceback
             self.error = traceback.format_exc()
             self._emit_status("error")
         finally:
+            self._guard_call("engine_state", "idle")
             if self.on_finish:
                 try:
                     self.on_finish(result)
@@ -197,6 +268,16 @@ class TypingEngine:
             except Exception:
                 pass
 
+    def _guard_call(self, name: str, *args):
+        fn = getattr(self.guard, name, None) if self.guard is not None else None
+        if fn is None:
+            return None
+        try:
+            return fn(*args)
+        except Exception as e:
+            self._log(f"guard {name} failed: {type(e).__name__}: {e}")
+            return None
+
     def _progress(self) -> None:
         if self.on_progress and self._total:
             self.on_progress(min(1.0, self._done / self._total))
@@ -205,7 +286,9 @@ class TypingEngine:
     def _check(self) -> None:
         if self._stop.is_set():
             raise Stopped()
-        if not self._resume.is_set():
+        if self.guard is not None and self._resume.is_set():
+            self._poll_focus()
+        while not self._resume.is_set():
             prev = self._kind
             self._emit_status("paused")
             while not self._resume.is_set():
@@ -214,7 +297,80 @@ class TypingEngine:
                 self._resume.wait(SLICE)
             if self._stop.is_set():
                 raise Stopped()
+            if self.guard is not None and not self._after_pause(prev):
+                continue                      # paused again (focus lost / F9 while erasing)
             self._emit_status(prev)
+
+    def _poll_focus(self, force: bool = False) -> bool:
+        """Focus guard: pause when keystrokes would land in another window. True = paused now."""
+        now = time.monotonic()
+        if not force and now - self._guard_t < self.guard_interval:
+            return False
+        self._guard_t = now
+        why = self._guard_call("focus_lost")
+        if not why:
+            return False
+        self._log(f"{why} — paused")
+        self.pause()
+        return True
+
+    def _raw_wait(self, seconds: float) -> bool:
+        """Sleep without entering the pause loop. False if paused meanwhile; raises Stopped."""
+        remaining = seconds
+        while True:
+            if self._stop.is_set():
+                raise Stopped()
+            if not self._resume.is_set():
+                return False
+            if remaining <= 0:
+                return True
+            s = min(SLICE, remaining)
+            self._sleep(s)
+            remaining -= s
+
+    def _after_pause(self, prev_kind: str) -> bool:
+        """Leaving a pause with a guard: make sure the target window is in front, then press away
+        what the user typed there meanwhile - outside the _buf/_cur model, those keys were never
+        part of it - and re-type our characters the user deleted. False when paused again."""
+        if self._poll_focus(force=True):
+            return False
+        er = self._guard_call("take_erase")
+        if not er:
+            return True
+        if not er.trusted:
+            self._log(f"keyboard guard: {er.reason or 'caret may have moved'} while paused — "
+                      "nothing erased, check the cursor position")
+            return True
+        b = self.backend
+        timing = getattr(self, "timing", None)
+        n, done = max(0, int(er.count)), 0
+        while done < n:
+            if not self._raw_wait(timing.backspace_delay() if timing else 0.03):
+                self._guard_call("give_back", Erase(n - done, er.restore))
+                return False
+            b.backspace()
+            done += 1
+        if n:
+            self._log(f"erased {n} chars typed while paused")
+        k = max(0, int(er.restore))
+        if not k:
+            return True
+        if prev_kind != "typing" or k > self._cur:      # mid-revision the model is not at the caret
+            self._log(f"keyboard guard: {k} chars of the typed text were deleted while paused — "
+                      "the text may now be off")
+            return True
+        for i, ch in enumerate(self._buf[self._cur - k:self._cur]):
+            if not self._raw_wait(timing.char_delay(ch, "", "") if timing else 0.03):
+                self._guard_call("give_back", Erase(0, k - i))
+                return False
+            if ch == "\n":
+                b.press_enter()
+            elif ch == "\t":
+                b.press_tab()
+            else:
+                b.type_char(ch)
+        self._log(f"re-typed {k} chars deleted while paused")
+        return True
 
     def _wait(self, seconds: float) -> None:
         remaining = seconds
@@ -500,8 +656,11 @@ class TypingEngine:
         self._press_n(b.right, loc.d)
 
     def _apply_revision(self, r: _Rev) -> None:
+        """Replace the span r.first (ending r.end in the live buffer) by r.revised: locate it from
+        the caret at the end of the text, backspace it, think, type the new text, go back to the
+        end. Used for [first][revised] revisions and for the REVIEW edits (run_edit)."""
         self._emit_status("revising")
-        tag = f"REV {r.index + 1}/{self._nrev}"
+        tag = f"{self._rev_tag} {r.index + 1}/{self._nrev}"
         n = len(self._buf) - r.end            # chars between end of `first` and cursor
         # cursor is always at the end of the buffer between operations
         anchor = r.first
@@ -519,13 +678,20 @@ class TypingEngine:
             self._key_backspace()
         self._wait(self.timing.revision_think())
         self._type_run(r.revised, typos=True)
-        if loc.kind == "count":
+        if self._edit_mode and hasattr(self.backend, "caret_to_end"):
+            # editing text that was already there: one Ctrl+End / Cmd+Down instead of a long run
+            # of Right presses, and it lands on the real end even if the app changed a character
+            self._wait(self.timing.arrow_delay())
+            self.backend.caret_to_end()
+            self._log(f"{tag} // return: end of text")
+        elif loc.kind == "count":
             for _ in range(n):
                 self._wait(self.timing.arrow_delay())
                 self._key_right()
         else:
             self._return(tag, loc)
         self._cur = len(self._buf)
+        self._applied += 1
         delta = len(r.revised) - len(r.first)
         for o in self._pending:
             if o is not r and o.index > r.index:
@@ -544,6 +710,7 @@ class TypingEngine:
         self.timing = HumanTiming(self.settings.wpm, self.rng)
         self._buf, self._cur = [], 0
         self._clip_verified = set()
+        self._edit_mode, self._rev_tag, self._applied = False, "REV", 0
         self._total = len(plan.text) + sum(len(r.revised) for r in plan.revisions)
         self._done = 0
         self._nrev = len(plan.revisions)
@@ -554,6 +721,11 @@ class TypingEngine:
             for r in plan.revisions
         ]
         s = plan.text
+        self._kind = "typing"
+        with self._ctl:
+            self._guard_call("engine_state", "start")       # new run: block, reset, arm focus guard
+            if not self._resume.is_set():                   # paused before the first key
+                self._guard_call("engine_state", "paused")
 
         def after(j: int) -> None:
             if mode != "random" or j >= len(s):
@@ -582,3 +754,92 @@ class TypingEngine:
         except Stopped:
             self._emit_status("stopped")
             return False
+        finally:
+            self._guard_call("engine_state", "idle")
+
+    # ---- edit existing text (REVIEW FIELD) ------------------------------
+    def run_edit(self, original: str, edits, _reset_flags: bool = True) -> bool:
+        """Edit text that is already in the focused field: `original` is its whole text (caret
+        anywhere in it: it is first sent to the end with caret_to_end), `edits` are
+        [(start, end, replacement)] in `original` coordinates (review.compute_edits). Each edit is
+        located like a revision (UI Automation / verified clipboard / count per locate_mode),
+        backspaced and retyped with think pauses and typos; one that cannot be verified is
+        skipped, never deleted blindly. Blocking. True if completed, False if stopped.
+        edit_result = (applied, total) afterwards."""
+        if _reset_flags:
+            self._stop.clear()
+            self._resume.set()
+        original = normalize(original or "")
+        spans = sorted((int(s), int(e), str(rep)) for s, e, rep in edits)
+        last = 0
+        for s, e, _rep in spans:
+            if not (last <= s <= e <= len(original)):
+                raise ValueError(f"edit ({s}, {e}) outside the text or overlapping")
+            last = e
+        self.rng = random.Random(self.settings.seed)
+        self.timing = HumanTiming(self.settings.wpm, self.rng)
+        self._buf, self._cur = list(original), len(original)
+        self._clip_verified = set()
+        self._edit_mode, self._rev_tag, self._applied = True, "EDIT", 0
+        self._total = sum(len(rep) for _s, _e, rep in spans)
+        self._done = 0
+        self._nrev = len(spans)
+        self._pending = [_Rev(i, s, original[s:e], rep, e) for i, (s, e, rep) in enumerate(spans)]
+        self.edit_result = (0, len(spans))
+        self._kind = "typing"
+        with self._ctl:
+            self._guard_call("engine_state", "start")
+            if not self._resume.is_set():
+                self._guard_call("engine_state", "paused")
+        try:
+            self._emit_status("typing")
+            self._progress()
+            b = self.backend
+            if hasattr(b, "caret_to_end"):            # clicking into the field moved the caret
+                self._wait(self.timing.arrow_delay())
+                b.caret_to_end()
+            if not self._field_matches(original):
+                return self._edit_finish(False)
+            for r in list(self._pending):
+                self._apply_revision(r)
+            if not self._total and self.on_progress:
+                self.on_progress(1.0)
+            self._progress()
+            return self._edit_finish(True)
+        except Stopped:
+            return self._edit_finish(False)
+        finally:
+            self._edit_mode = False
+            self._guard_call("engine_state", "idle")
+
+    def _field_matches(self, original: str) -> bool:
+        """With an exact locator, check the field still holds the reviewed text. A changed field is
+        only logged when every edit is verified anyway; with LOCATE count (blind) it stops."""
+        loc = getattr(self.backend, "locator", None)
+        if loc is None:
+            return True
+        try:
+            snap = loc.snapshot()
+        except Exception:
+            snap = None
+        if not snap or normalize(snap[0]) == original:
+            return True
+        if self.settings.locate_mode == "count":
+            self._log("the field changed since it was reviewed and LOCATE count cannot verify edits — "
+                      "nothing changed, review it again")
+            return False
+        self._log("the field changed since it was reviewed — every edit is verified before it is applied")
+        return True
+
+    def _edit_finish(self, ok: bool) -> bool:
+        n = self._nrev
+        self.edit_result = (self._applied, n)
+        msg = f"applied {self._applied} of {n} edit{'s' if n != 1 else ''}"
+        skipped = n - self._applied - len(self._pending)
+        if skipped:
+            msg += f" ({skipped} skipped: location not verified)"
+        if not ok and self._pending:
+            msg += f" — stopped, {len(self._pending)} not done"
+        self._log(msg)
+        self._emit_status("done" if ok else "stopped")
+        return ok

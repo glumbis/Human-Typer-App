@@ -3,7 +3,7 @@ import re
 import time
 from collections import deque
 
-_REV_RE = re.compile(r"REV\w*\s*(\d+)\s*/\s*(\d+)", re.I)
+_REV_RE = re.compile(r"(?:REV\w*|EDIT)\s*(\d+)\s*/\s*(\d+)", re.I)      # "REV 2/5" / "EDIT 2/5"
 
 
 def fmt_time(sec) -> str:

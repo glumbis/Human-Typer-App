@@ -9,6 +9,10 @@ DEFAULTS = {
     "length": 250,
     "language": "auto",
     "tone": "neutral",
+    "revisions": "3",       # WRITE: [draft][final] pairs to add
+    "mode": "write",        # write / improve
+    "improve_style": "clearer",
+    "improve_revise": True,  # IMPROVE: type the original wording first, then revise it
 }
 
 

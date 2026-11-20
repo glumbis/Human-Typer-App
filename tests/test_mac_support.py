@@ -326,7 +326,8 @@ def test_mac_event_tap_runs_on_own_thread_and_filters():
     q = FakeQuartz()
     tap = hk.MacEventTap(lambda t, e: seen.append((t, e)) or e == "F8", quartz=q)
     tap.start()
-    assert q.created[3] == hk.MAC_KEY_MASK == (1 << 10) | (1 << 11)
+    # keyDown/keyUp (hotkeys) + flagsChanged and mouse-downs (KEYBOARD GUARD); never mouse-moved
+    assert q.created[3] == hk.MAC_KEY_MASK == (1 << 10) | (1 << 11) | (1 << 12) | (1 << 1) | (1 << 3) | (1 << 25)
     assert q.created[2] == q.kCGEventTapOptionDefault      # active tap: may swallow events
     cb = q.created[4]
     assert cb(None, hk.MAC_KEYDOWN, "F8", None) is None     # swallowed
@@ -557,6 +558,31 @@ def test_quartz_combos_set_flags_and_release(meth, mods, kc, flags):
     ups = ev[n + 2:]
     assert [k for k, _, _ in ups] == list(reversed(mods)) and not any(d for _, d, _ in ups)
     assert ups[-1][2] == 0                                                      # nothing sticks
+
+
+def test_quartz_select_all_and_caret_to_end_use_arrows():
+    b, q = _qb()
+    b.select_all()
+    keys = [(e["kc"], _plain(e["flags"])) for e in q.posted if e["kc"] in (125, 126) and e["down"]]
+    assert keys == [(126, CMD), (125, CMD | SHIFT)]           # Cmd+Up, Cmd+Shift+Down
+    assert _plain(q.posted[-1]["flags"]) == 0 and 0 not in [e["kc"] for e in q.posted]
+    q.posted.clear()
+    b.caret_to_end()
+    assert [(e["kc"], _plain(e["flags"])) for e in q.posted if e["kc"] == 125 and e["down"]] == [(125, CMD)]
+
+
+@pytest.mark.parametrize("mac,sel,end", [
+    (True, ["cmd", "up", "cmd", "shift", "down"], ["cmd", "down"]),
+    (False, ["ctrl", "a"], ["ctrl", "end"]),
+])
+def test_select_all_and_caret_to_end_shortcuts(monkeypatch, mac, sel, end):
+    _FakeKey.down, _FakeKey.end = "down", "end"
+    for meth, want in (("select_all", sel), ("caret_to_end", end)):
+        b = _backend(monkeypatch, mac)
+        getattr(b, meth)()
+        assert _downs(b) == want, meth
+        ups = [k for a, k in b._kb.log if a == "up"]
+        assert sorted(ups) == sorted(want)
 
 
 def test_quartz_combo_releases_modifiers_on_error():

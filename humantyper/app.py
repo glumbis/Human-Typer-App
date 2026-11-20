@@ -1,6 +1,7 @@
 """customtkinter GUI for Human Typer: retro ASCII terminal skin."""
 import os
 import queue
+import threading
 import time
 import tkinter as tk
 
@@ -11,8 +12,9 @@ from . import config
 from . import plat
 from .backends import make_backend
 from .engine import Settings, TypingEngine
-from .hotkeys import GlobalHotkeys
+from .hotkeys import GlobalHotkeys, make_guard
 from .parser import parse
+from . import review
 from .ui import art
 from .ui import macutil
 from .ui import theme as T
@@ -24,6 +26,7 @@ from .ui.stats import Stats
 from .ui.winutil import fit_to_workarea
 
 HK_START, HK_PAUSE = macutil.hotkey_labels()      # "F8"/"F9", or "fn+F8"/"fn+F9" on a Mac
+HK_REVIEW = macutil.review_hotkey_label()          # "F10" / "fn+F10"
 READY = f"READY — click into any app and press {HK_START}"
 MODES = {"RANDOM": "random", "END": "end"}
 LOCATE = ("auto", "clipboard", "count")
@@ -38,12 +41,17 @@ class HumanTyperApp(ctk.CTk):
         super().__init__()
         T.init_fonts(self)
         self.title("HUMAN TYPER")
-        self.geometry("800x700")
-        self.minsize(760, 660)
+        self.geometry("800x724")
+        self.minsize(760, 684)
         self.configure(fg_color=T.BG)
         self._set_icon()
 
         self.cfg = config.load()
+        # KEYBOARD GUARD (+ focus guard): fed by the hotkey hook, driven by the engine
+        self._own_rects = []        # macOS: our window rectangles (global points) for click checks
+        self._guard_t = 0.0
+        self._guard_warned = set()
+        self.guard = make_guard(bool(self.cfg.get("keyboard_guard", False)), lambda: self._own_rects)
         self.events: "queue.Queue" = queue.Queue()
         self.st = "idle"            # idle | starting | countdown | typing
         self.engine = None
@@ -74,6 +82,16 @@ class HumanTyperApp(ctk.CTk):
         self._minimized = False
         self._click_hold = None     # engine held by a mouse-down on the overlay (macOS)
         self._hold_kept = False
+        self._resume_id = None      # main-window RESUME countdown
+        # REVIEW FIELD: None | "countdown" | "grab" | "improve" | "window"
+        self._review = None
+        self._review_id = None      # countdown after-id
+        self._review_token = 0      # stale AI results are ignored
+        self._review_cancel = False
+        self._review_orig = ""
+        self._review_win = None
+        self._edit_job = None       # armed edits: {"original", "edits"} -> next START / F8 applies them
+        self._run_mode = "type"     # "type" (paste box) | "edit" (REVIEW edits)
 
         self._build()
         self._fit_to_screen()
@@ -90,7 +108,8 @@ class HumanTyperApp(ctk.CTk):
             self._check_permissions(prompt=True)
 
         self.hotkeys = GlobalHotkeys(lambda: self.events.put(("hotkey", "f8")),
-                                     lambda: self.events.put(("hotkey", "f9")))
+                                     lambda: self.events.put(("hotkey", "f9")), guard=self.guard,
+                                     on_f10=lambda: self.events.put(("hotkey", "f10")))
         self._hk_mode = None
         self._hk_upgrade_tried = False
         try:
@@ -118,7 +137,7 @@ class HumanTyperApp(ctk.CTk):
             # macOS draws the fonts 1.25x larger (T.MAC_SIZE_FACTOR), so the window grows with them;
             # at 800x700 the command menu ran into the face column there. Identity on Windows.
             k = T.size_factor()
-            fit_to_workarea(self, int(800 * k), int(700 * k), int(760 * k), int(560 * k),
+            fit_to_workarea(self, int(800 * k), int(724 * k), int(760 * k), int(584 * k),
                             ctk.ScalingTracker.get_window_scaling(self))
         except Exception:
             pass
@@ -315,7 +334,7 @@ class HumanTyperApp(ctk.CTk):
         # command menu: ghost widgets on the galaxy ------------------------
         self._row_h = 24
         self._menu_top = f9.metrics("linespace") + 12
-        self.rowconfigure(2, minsize=8 + self._menu_top + 9 * self._row_h + 10)
+        self.rowconfigure(2, minsize=8 + self._menu_top + 10 * self._row_h + 10)
         self.menu_box = GBox(cv, "COMMAND MENU", f9)
         self._menu_items = []          # (ghost, col_x, row)
         lab_w = f10.measure("M") * 22
@@ -343,20 +362,27 @@ class HumanTyperApp(ctk.CTk):
         self.locate_btn = GToggle(cv, LOCATE, loc if loc in LOCATE else "auto")
         self._menu_row(add, 4, "6) LOCATE", self.locate_btn, lab_w)
 
+        self.guard_btn = GToggle(cv, ["yes", "no"], "yes" if self.cfg.get("keyboard_guard", False) else "no",
+                                 command=lambda v: self._set_guard(v == "yes"))
+        self._menu_row(add, 5, "7) KEYBOARD GUARD", self.guard_btn, lab_w)
+
         self.top_btn = GToggle(cv, ["yes", "no"], "yes" if self.cfg["always_on_top"] else "no",
                                command=lambda v: self.attributes("-topmost", v == "yes"))
-        self._menu_row(add, 5, "7) ALWAYS ON TOP", self.top_btn, lab_w)
+        self._menu_row(add, 6, "8) ALWAYS ON TOP", self.top_btn, lab_w)
 
         self.overlay_btn = GToggle(cv, ["yes", "no"], "yes" if self.cfg.get("overlay", True) else "no",
                                    command=lambda v: self._set_overlay(v == "yes"))
-        self._menu_row(add, 6, "8) OVERLAY", self.overlay_btn, lab_w)
+        self._menu_row(add, 7, "9) OVERLAY", self.overlay_btn, lab_w)
 
         self.ai_btn = GButton(cv, "[ OPEN ]", self._open_ai, color=T.PINK)
-        self._menu_row(add, 7, "9) AI WRITE", self.ai_btn, lab_w)
+        self._menu_row(add, 8, "10) AI WRITE", self.ai_btn, lab_w)
+        # REVIEW FIELD: the AI improves the text you wrote in another app, then edits it there
+        self.review_btn = add(GButton(cv, f"[ {HK_REVIEW} REVIEW FIELD ]", self._review_button, color=T.LAVENDER),
+                              lab_w + f10.measure("M") * 10, 8)
 
         self.anim_btn = GToggle(cv, ["on", "off"], "on" if self.cfg.get("animation", True) else "off",
                                 command=lambda v: self._set_animation(v == "on"))
-        self._menu_row(add, 8, "10) ANIMATION", self.anim_btn, lab_w)
+        self._menu_row(add, 9, "11) ANIMATION", self.anim_btn, lab_w)
 
         # right column: face + log drawn straight on the galaxy ------------
         f6, f8 = T.font(6), T.font(8)
@@ -381,7 +407,7 @@ class HumanTyperApp(ctk.CTk):
         self.status = GLabel(cv, "", f11, T.ACCENT)
         self.bar = GLabel(cv, "", f10, T.ACCENT)
         self.start_btn = GButton(cv, f"[ {HK_START} START ]", self._start_button, fnt=f11)
-        self.pause_btn = GButton(cv, f"[ {HK_PAUSE} PAUSE ]", self._toggle_pause, fnt=f11, color=T.WARN)
+        self.pause_btn = GButton(cv, f"[ {HK_PAUSE} PAUSE ]", self._pause_button, fnt=f11, color=T.WARN)
         self.stop_btn = GButton(cv, "[ STOP ]", self._stop, fnt=f11, color=T.ERR)
         self.pause_btn.set_enabled(False)
         self.stop_btn.set_enabled(False)
@@ -554,7 +580,7 @@ class HumanTyperApp(ctk.CTk):
             self._log(f"AI module unavailable: {e}", "err")
             return
         try:
-            open_ai_window(self, on_use_text=self._use_ai_text)
+            open_ai_window(self, on_use_text=self._use_ai_text, on_review=self._review_button)
         except Exception as e:
             self._log(f"AI window failed: {e}", "err")
 
@@ -564,6 +590,298 @@ class HumanTyperApp(ctk.CTk):
             return
         self.textbox.delete("1.0", "end")
         self.textbox.insert("1.0", text)
+
+    # ---- REVIEW FIELD -------------------------------------------------
+    # F10 (or [ REVIEW FIELD ] + 3 s countdown) reads the text the user wrote in another app, the
+    # local AI improves it, the REVIEW window shows the changes; APPLY IN FIELD arms an edit run
+    # that the next START / F8 applies in that field (engine.run_edit). Nothing in the field
+    # changes before that.
+    def _review_blocks_start(self):
+        """No typing while REVIEW reads the field (both would send keys)."""
+        if self._review in ("countdown", "grab"):
+            self._set_status("REVIEW is reading the field — wait a moment", T.WARN)
+            return True
+        return False
+
+    def _review_ready(self):
+        if self.st != "idle":
+            self._log("REVIEW: not while typing — stop it first", "warn")
+            return False
+        if self._review in ("countdown", "grab", "improve"):
+            self._log("REVIEW: already working on it", "dim")
+            return False
+        return True
+
+    def _review_hotkey(self):
+        """F10 pressed in the target app: read the focused field (once F10 is released)."""
+        if not self._review_ready():
+            return
+        self._review_begin()
+        self._set_status("REVIEW — reading the field...", T.WARN)
+        self._review_id = self.after(250, self._review_grab)
+
+    def _review_button(self):
+        """[ REVIEW FIELD ] in the main window / AI window: 3 s to click into the field, then read it."""
+        if not self._review_ready():
+            return
+        self._review_begin()
+        self._review = "countdown"
+        self.stop_btn.set_enabled(True)
+        self._review_countdown(3)
+
+    def _review_begin(self):
+        if self._edit_job:
+            self._disarm_edits(None)
+        self._close_review_win()
+        self._review_token += 1
+        self._review = "grab"
+
+    def _review_countdown(self, n):
+        self._review_id = None
+        if self._review != "countdown":
+            return
+        if n <= 0:
+            self._review = "grab"
+            self._review_grab()
+            return
+        self._set_status(f"REVIEW — T-{n}... click into the text you want reviewed", T.WARN)
+        self._ov_dirty = True
+        self._review_id = self.after(1000, lambda: self._review_countdown(n - 1))
+
+    def _own_window_front(self):
+        """True when one of our windows is in front (then select-all/copy would hit our own text)."""
+        try:
+            if plat.IS_MAC:
+                fr = self.overlay.focus_ret if self.overlay is not None else None
+                return bool(fr is not None and fr.self_front() is True)
+            if os.name == "nt":
+                from .hotkeys import win_front
+                f = win_front()
+                return bool(f and f[1] == os.getpid())
+        except Exception:
+            pass
+        return False
+
+    def _review_grab(self):
+        self._review_id = None
+        if self._review != "grab":
+            return
+        if self.st == "idle" and not self._edit_job:
+            self.stop_btn.set_enabled(False)
+        if self._own_window_front():
+            self._review_reset(f"REVIEW — click into your text field first (or press {HK_REVIEW} there)", T.WARN)
+            return
+        if self.backend is None:
+            try:
+                self.backend = make_backend()
+            except Exception as e:
+                self._review_reset(f"REVIEW — cannot send keys: {e}", T.ERR)
+                return
+        self._set_status("REVIEW — reading the field...", T.WARN)
+        b = self.backend
+
+        def work():
+            try:
+                g = review.grab_field(b)
+            except Exception as e:
+                g = review.Grab("", "", f"Reading the field failed: {e}")
+            self.events.put(("review_grab", (g,)))
+        threading.Thread(target=work, daemon=True, name="ht-review-grab").start()
+
+    def _ev_review_grab(self, g):
+        if self._review != "grab":
+            return
+        if not g.ok:
+            self._log(f"REVIEW: {g.error}", "warn")
+            self._review_reset("REVIEW — " + g.error, T.WARN)
+            return
+        self._log(f"REVIEW: read {len(g.text)} chars from the field ({g.method})", "ok")
+        self._review_orig = g.text
+        self._review_improve(None)
+
+    def _review_improve(self, style):
+        """Let the local AI improve the grabbed text in a worker thread (style None: the AI
+        settings' improve_style). Model and language are the AI window's."""
+        try:
+            from .ai import engine as ai_eng
+            from .ai import prompts
+            from .ai import rewrite
+            from .ai import settings as ai_settings
+        except Exception as e:
+            self._review_fail(f"AI module unavailable: {e}")
+            return
+        eng = ai_eng.get_engine()
+        cfg = eng.settings
+        style = style or cfg.get("improve_style") or "clearer"
+        if style not in prompts.IMPROVE_STYLES:
+            style = "clearer"
+        lang = cfg.get("language", "auto")
+        lang = prompts.LEGACY_LANG.get(lang, lang)
+        if lang not in prompts.LANGUAGES:
+            lang = "auto"
+        if not eng.available():
+            self._review_fail(ai_eng.MISSING_MSG)
+            return
+        path, name = review.resolve_model(cfg)
+        if not path:
+            self._review_fail("No AI model installed yet — open AI WRITE > [ MODELS ] and install one.")
+            return
+        if eng.generating():
+            self._review_fail("The AI is busy (AI WRITE window) — try again when it is done.")
+            return
+        cfg["improve_style"] = style
+        try:
+            ai_settings.save(cfg)
+        except Exception:
+            pass
+        self._review = "improve"
+        self._review_cancel = False
+        self._review_token += 1
+        tok, text = self._review_token, self._review_orig
+        self._set_status("REVIEW — starting the AI...", T.LAVENDER)
+        self._log(f"REVIEW: improving ({style}) with {name or 'the local model'}", "dim")
+        q = self.events
+
+        def work():
+            stats = {}
+            try:
+                out = rewrite.improve_text(
+                    eng, path, text, style, lang, name,
+                    cancelled=lambda: self._review_cancel or tok != self._review_token,
+                    on_progress=lambda k, n, _so_far: q.put(("review_progress", (tok, k, n))), stats=stats)
+                q.put(("review_done", (tok, style, out, stats, "")))
+            except ai_eng.EngineError as e:
+                q.put(("review_done", (tok, style, "", {}, str(e))))
+            except Exception as e:
+                q.put(("review_done", (tok, style, "", {}, f"the AI failed: {e}")))
+        threading.Thread(target=work, daemon=True, name="ht-review-ai").start()
+
+    def _ev_review_progress(self, tok, k, n):
+        if tok != self._review_token or self._review != "improve" or k >= n:
+            return
+        msg = f"improving paragraph {k + 1}/{n}..."
+        self._set_status("REVIEW — " + msg, T.LAVENDER)
+        self._log("REVIEW: " + msg, "dim")
+        if self._review_win is not None:
+            self._review_win.set_busy(True, msg)
+
+    def _ev_review_done(self, tok, style, out, stats, err):
+        if tok != self._review_token or self._review != "improve":
+            return
+        if err:
+            self._review_fail(err)
+            return
+        n = len(review.compute_edits(self._review_orig, out))
+        total, done, kept = stats.get("paragraphs", 0), stats.get("done", 0), stats.get("kept", 0)
+        if not total:
+            msg = "Nothing to improve (needs at least a few words)."
+        elif not n:
+            msg = ("The model's answers were unusable, nothing changed. Try REDO or another model."
+                   if done and kept == done else
+                   "No changes suggested — the text already looks fine in this style. Try another STYLE + REDO.")
+        else:
+            msg = (f"{n} edit{'s' if n != 1 else ''} suggested. Change the improved text if you like, "
+                   "then APPLY IN FIELD.")
+            if kept:
+                msg += f" ({kept} paragraph{'s' if kept != 1 else ''} kept as you wrote {'them' if kept != 1 else 'it'}.)"
+        self._review = "window"
+        self._log(f"REVIEW: {n} edit{'s' if n != 1 else ''} suggested ({style})", "ok")
+        self._set_status(f"REVIEW — {n} edit{'s' if n != 1 else ''} suggested, see the REVIEW window", T.LAVENDER)
+        self._open_review_win(out, style, msg)
+
+    def _review_fail(self, msg):
+        self._log("REVIEW: " + msg, "err")
+        w = self._review_win
+        if w is not None and not w._closed:
+            self._review = "window"
+            w.set_busy(False)
+            w._info(msg, T.ERR)
+            self._set_status("REVIEW — " + msg, T.ERR)
+        else:
+            self._review_reset("REVIEW — " + msg, T.ERR)
+
+    def _open_review_win(self, improved, style, msg):
+        from .ui.review_window import ReviewWindow
+        w = self._review_win
+        if w is not None and not w._closed:
+            w.set_result(improved, msg)
+            w._raise_above_master()
+            return
+        self._review_win = ReviewWindow(self, self._review_orig, improved, style, on_apply=self._review_apply,
+                                        on_redo=self._review_redo, on_close=self._review_closed, message=msg,
+                                        hotkey=HK_START)
+
+    def _review_redo(self, style):
+        if self._review == "improve":
+            return
+        self._review_improve(style)
+
+    def _review_apply(self, text):
+        """APPLY IN FIELD: arm the edits; the next START / F8 applies them. -> error text or None."""
+        if self.st != "idle":
+            return "Wait until the typing has finished (or STOP it)."
+        if self._review == "improve":
+            return "The AI is still working."
+        from .locator import normalize
+        edits = review.compute_edits(self._review_orig, normalize(text))
+        if not edits:
+            return "Nothing to change — the improved text is the same as yours."
+        self._edit_job = {"original": self._review_orig, "edits": edits}
+        self._close_review_win()
+        self._review = None
+        n = len(edits)
+        self.stop_btn.set_enabled(True)
+        self._log(f"REVIEW: {n} edit{'s' if n != 1 else ''} ready — click into the field, press {HK_START}", "hi")
+        if any("\n" in self._review_orig[s:e] or "\n" in r for s, e, r in edits):
+            self._log("REVIEW: some edits retype line breaks with Enter — careful in chat apps, "
+                      "where Enter sends the message", "warn")
+        self._set_status(f"EDITS READY ({n}) — click into the field and press {HK_START} (or START)", T.LAVENDER)
+        if self.overlay is not None:
+            self.overlay.flash("EDITS", 3.0)
+        self._ov_dirty = True
+        return None
+
+    def _review_closed(self):
+        """REVIEW window CANCEL / closed: drop the proposal (and stop the AI if it is working)."""
+        self._review_win = None
+        if self._review == "improve":
+            self._review_cancel = True
+            try:
+                from .ai import engine as ai_eng
+                ai_eng.get_engine().cancel()
+            except Exception:
+                pass
+        self._review_token += 1
+        self._review = None
+        if self.st == "idle" and not self._edit_job:
+            self._set_status(READY)
+
+    def _close_review_win(self):
+        w, self._review_win = self._review_win, None
+        if w is not None:
+            w.close()
+
+    def _disarm_edits(self, msg):
+        self._edit_job = None
+        if self.st == "idle":
+            self.stop_btn.set_enabled(False)
+        self._ov_dirty = True
+        if msg:
+            self._log(msg, "dim")
+            self._set_status(READY)
+
+    def _review_reset(self, msg, color=T.WARN):
+        if self._review_id is not None:
+            try:
+                self.after_cancel(self._review_id)
+            except Exception:
+                pass
+            self._review_id = None
+        self._review = None
+        if self.st == "idle" and not self._edit_job:
+            self.stop_btn.set_enabled(False)
+        self._ov_dirty = True
+        self._set_status(msg, color)
 
     # ---- overlay ------------------------------------------------------
     def _build_overlay(self):
@@ -635,7 +953,7 @@ class HumanTyperApp(ctk.CTk):
 
         def resume():
             if self.engine is eng and eng.paused:
-                eng.resume()
+                self._resume_engine(eng)
         self._after_id = self.after(150, lambda: self._after_target_focus(resume, lambda: None))
 
     def _overlay_pause(self):
@@ -650,7 +968,7 @@ class HumanTyperApp(ctk.CTk):
 
             def go():
                 if self.engine is eng and eng.paused:
-                    eng.resume()
+                    self._resume_engine(eng)
             self._after_id = self.after(150, lambda: self._after_target_focus(go, go))
             return
         self._toggle_pause()
@@ -672,6 +990,10 @@ class HumanTyperApp(ctk.CTk):
 
     def _overlay_state(self):
         if self.st == "idle":
+            if self._edit_job:
+                return "EDITS"
+            if self._review in ("countdown", "grab", "improve"):
+                return "REVIEW"
             return self._ov_result or "READY"
         if self.st == "countdown":
             return f"T-{self._countdown_n}"
@@ -729,6 +1051,67 @@ class HumanTyperApp(ctk.CTk):
         if e.widget is self:
             self._minimized = False
 
+    # ---- keyboard guard -----------------------------------------------
+    def _set_guard(self, on):
+        """7) KEYBOARD GUARD: while typing, physical keys are blocked (F8/F9 still work), what you
+        type while paused is erased on resume, and typing pauses when the target window loses focus.
+        Takes effect at the next start; switching it off releases the keyboard at once."""
+        self.guard_btn.set("yes" if on else "no")
+        self.guard.enabled = bool(on)
+        if not on:
+            self.guard.engine_state("idle")
+        elif self.st != "idle":
+            self._log("KEYBOARD GUARD: active from the next start", "dim")
+        self._save_cfg()
+
+    def _guard_warn_once(self, key, text):
+        if key not in self._guard_warned:
+            self._guard_warned.add(key)
+            self._log(text, "warn")
+
+    def _guard_for_run(self):
+        """The guard for a new engine (None while the setting is off); logs what cannot work."""
+        g = self.guard
+        if not g.enabled:
+            return None
+        mode = self.hotkeys.mode
+        if mode is None:
+            self._guard_warn_once("off", "KEYBOARD GUARD: hotkeys are off - keys are NOT blocked "
+                                         "or tracked (focus guard only)")
+        elif mode == "listen":
+            self._guard_warn_once("listen", "KEYBOARD GUARD: listen-only event tap cannot block keys "
+                                            "(grant Accessibility) - pause tracking + focus guard only")
+        if g.focus is not None and not g.focus.available:
+            self._guard_warn_once("focus", "KEYBOARD GUARD: focus guard unavailable on this system")
+        self._guard_refresh(force=True)
+        return g
+
+    def _guard_refresh(self, force=False):
+        """Tk thread. macOS asks NSWorkspace only here (never on the engine/hook threads): cache the
+        frontmost app for the focus guard and our window rectangles for the click check."""
+        if not plat.IS_MAC:
+            return
+        now = time.time()
+        if not force and now - self._guard_t < 0.1:
+            return
+        self._guard_t = now
+        if self.guard.focus is not None:
+            self.guard.focus.refresh()
+        rects = []
+        wins = [self] + [w for w in self.winfo_children() if isinstance(w, tk.Toplevel)]
+        for w in wins:
+            try:
+                if w.winfo_ismapped():
+                    x, y = w.winfo_rootx(), w.winfo_rooty()
+                    rects.append((x, y, x + w.winfo_width(), y + w.winfo_height()))
+            except Exception:
+                pass
+        self._own_rects = rects
+
+    def _resume_engine(self, eng):
+        self._guard_refresh(force=True)           # the focus guard sees the app in front right now
+        eng.resume()
+
     def _set_animation(self, on):
         """ANIMATION off freezes the galaxy, banner and face on their current frame (no CPU)."""
         self.anim_btn.set("on" if on else "off")
@@ -760,7 +1143,7 @@ class HumanTyperApp(ctk.CTk):
     def _log(self, text, tag=None):
         if tag is None:
             up = text.upper()
-            if "TYPO" in up or "FIX" in up or "ERROR" in up:
+            if "TYPO" in up or "FIX" in up or "ERROR" in up or "GUARD" in up or "LOST FOCUS" in up:
                 tag = "warn"
             elif "REV" in up:
                 tag = "rev"
@@ -879,9 +1262,9 @@ class HumanTyperApp(ctk.CTk):
 
     # ---- start / stop -------------------------------------------------
     def _start_button(self):
-        if self.st != "idle":
+        if self.st != "idle" or self._review_blocks_start():
             return
-        if not self._text().strip():
+        if not self._text().strip() and not self._edit_job:
             self._set_status("NO INPUT — paste some text first", T.WARN)
             return
         self._enter_active("countdown")
@@ -900,7 +1283,9 @@ class HumanTyperApp(ctk.CTk):
 
     def _hotkey_start(self, delay=250):
         """Arm and start typing after `delay` ms (None: the caller schedules it). False if no text."""
-        if not self._text().strip():
+        if self._review_blocks_start():
+            return False
+        if not self._text().strip() and not self._edit_job:
             self._set_status("NO INPUT — paste some text first", T.WARN)
             if self.overlay:
                 self.overlay.flash("NO TEXT")
@@ -938,6 +1323,10 @@ class HumanTyperApp(ctk.CTk):
             return None
 
     def _begin_stats(self):
+        if self._edit_job:
+            self.stats.begin(sum(len(r) for _s, _e, r in self._edit_job["edits"]))
+            self.stats.rev_total = len(self._edit_job["edits"])
+            return
         try:
             plan = parse(self._text())
             total = len(plan.text) + sum(len(r.revised) for r in plan.revisions)
@@ -952,6 +1341,8 @@ class HumanTyperApp(ctk.CTk):
         if self.st not in ("starting", "countdown"):
             return
         text = self._text()
+        job, self._edit_job = self._edit_job, None          # armed REVIEW edits are used once
+        self._run_mode = "edit" if job else "type"
         if self.backend is None:
             try:
                 self.backend = make_backend()
@@ -962,10 +1353,10 @@ class HumanTyperApp(ctk.CTk):
         self._kind = "typing"
         self._t0 = time.time()
         self.stats.begin(self.stats.total)      # restart the clock when keys actually start flowing
-        self.stats.rev_total = self._plan_revs()
+        self.stats.rev_total = len(job["edits"]) if job else self._plan_revs()
         self.pause_btn.set_enabled(True)
         self.pause_btn.configure(text=f"[ {HK_PAUSE} PAUSE ]")
-        self._set_status("TYPING 0%", T.ACCENT)
+        self._set_status("EDITING 0%" if job else "TYPING 0%", T.ACCENT)
         self._log(f"SETTINGS // WPM: {self.wpm_var.get():.0f} TYPO: {self.typo_var.get():.1f}% "
                   f"LOCATE: {self.locate_btn.get().upper()}", "dim")
         base = dict(on_progress=lambda f: self.events.put(("progress", f)),
@@ -974,17 +1365,71 @@ class HumanTyperApp(ctk.CTk):
         extra = dict(on_log=lambda s: self.events.put(("log", s)),
                      on_char=lambda c: self.events.put(("char", c)))
         settings = self._settings()
+        guard = self._guard_for_run()
+        if guard is not None:
+            extra["guard"] = guard
         try:
             self.engine = TypingEngine(self.backend, settings, **base, **extra)
-        except TypeError:       # engine without on_log / on_char yet
+        except TypeError:       # engine without on_log / on_char / guard yet
             self.engine = TypingEngine(self.backend, settings, **base)
-        self.engine.start(text)
+        if job:
+            self._log(f"REVIEW: applying {len(job['edits'])} edits in the field", "hi")
+            self.engine.start_edit(job["original"], job["edits"])
+        else:
+            self.engine.start(text)
 
     def _toggle_pause(self):
+        self._cancel_resume_countdown()
         if self.st == "typing" and self.engine:
-            self.engine.toggle_pause()
+            if self.engine.paused:
+                self._resume_engine(self.engine)
+            else:
+                self.engine.pause()
+
+    def _pause_button(self):
+        """Main-window PAUSE / RESUME. RESUME counts down first, like START: the click put Human
+        Typer in front, and the keys (and the focus guard) must see the target field again.
+        F9 and the overlay still resume at once."""
+        if self.st == "typing" and self.engine and self.engine.paused:
+            if self._resume_id is not None:                  # clicked again: cancel the countdown
+                self._cancel_resume_countdown()
+                self._set_status(f"PAUSED — {HK_PAUSE} to resume", T.WARN)
+                return
+            self._resume_countdown(3, self.engine)
+            return
+        self._toggle_pause()
+
+    def _resume_countdown(self, n, eng):
+        self._resume_id = None
+        if self.st != "typing" or self.engine is not eng or not eng.paused:
+            return
+        if n <= 0:
+            self.pause_btn.configure(text=f"[ {HK_PAUSE} PAUSE ]")
+            self._resume_engine(eng)
+            return
+        self._set_status(f"RESUMING — T-{n}... click into the target field", T.WARN)
+        self.pause_btn.configure(text=f"[ CANCEL T-{n} ]")
+        self._ov_dirty = True
+        self._resume_id = self.after(1000, lambda: self._resume_countdown(n - 1, eng))
+
+    def _cancel_resume_countdown(self):
+        if self._resume_id is not None:
+            try:
+                self.after_cancel(self._resume_id)
+            except Exception:
+                pass
+            self._resume_id = None
+            if self.engine is not None and self.engine.paused:
+                self.pause_btn.configure(text=f"[ {HK_PAUSE} RESUME ]")
 
     def _stop(self):
+        self._cancel_resume_countdown()
+        if self.st == "idle":
+            if self._review == "countdown":
+                self._review_reset("REVIEW cancelled")
+            elif self._edit_job:
+                self._disarm_edits("REVIEW: edits not applied (cancelled)")
+            return
         if self.st in ("starting", "countdown"):
             if self._after_id:
                 self.after_cancel(self._after_id)
@@ -994,7 +1439,10 @@ class HumanTyperApp(ctk.CTk):
             self.engine.stop()
 
     def _finish_ui(self, message, color=T.ACCENT):
+        self.guard.engine_state("idle")           # never leave the keyboard blocked
+        self._cancel_resume_countdown()
         self.st = "idle"
+        self._run_mode = "type"
         self.engine = None
         self.stats.end()
         self._ov_result = "DONE" if message == "DONE" else "STOPPED"
@@ -1003,7 +1451,7 @@ class HumanTyperApp(ctk.CTk):
         self.start_btn.set_enabled(True)
         self.pause_btn.set_enabled(False)
         self.pause_btn.configure(text=f"[ {HK_PAUSE} PAUSE ]")
-        self.stop_btn.set_enabled(False)
+        self.stop_btn.set_enabled(bool(self._edit_job))      # armed REVIEW edits: STOP disarms them
         self._set_status(message, color)
         self._draw_face()
         self.after(6000, self._reset_face)
@@ -1024,6 +1472,8 @@ class HumanTyperApp(ctk.CTk):
                 self._handle(kind, val)
         except queue.Empty:
             pass
+        if self.st != "idle" and self.guard.enabled:
+            self._guard_refresh()
         self._refresh_stream()
         self._sync_overlay()
         self._update_hint()
@@ -1050,6 +1500,10 @@ class HumanTyperApp(ctk.CTk):
                     self._stop()
             elif val == "f9":
                 self._toggle_pause()
+            elif val == "f10":
+                self._review_hotkey()
+        elif kind.startswith("review_"):
+            getattr(self, "_ev_" + kind)(*val)
         elif kind == "log":
             self._log(str(val))
             self.stats.on_log(val)
@@ -1092,6 +1546,8 @@ class HumanTyperApp(ctk.CTk):
             self._finish_ui(msg, col)
 
     def _typing_text(self):
+        if self._run_mode == "edit":
+            return f"EDITING {self._pct}%"
         return f"REVISING {self._pct}%" if self._kind == "revising" else f"TYPING {self._pct}%"
 
     # ---- shutdown -----------------------------------------------------
@@ -1105,6 +1561,7 @@ class HumanTyperApp(ctk.CTk):
                 "always_on_top": self.top_btn.get() == "yes",
                 "overlay": self.overlay_btn.get() == "yes",
                 "animation": self.anim_btn.get() == "on",
+                "keyboard_guard": self.guard_btn.get() == "yes",
                 "last_text": self._text(),
             }
             if self.overlay is not None:
@@ -1119,6 +1576,7 @@ class HumanTyperApp(ctk.CTk):
         self._save_cfg()
         if self.engine:
             self.engine.stop()
+        self.guard.engine_state("idle")
         self.hotkeys.stop()
         try:
             from .ai import shutdown_ai

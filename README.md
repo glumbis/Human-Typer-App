@@ -126,6 +126,7 @@ This fetches the pinned llama.cpp engine for your CPU, builds `dist/HumanTyper.a
 |-----|--------|
 | F8  | Start typing (when idle) / stop (while typing) |
 | F9  | Pause / resume |
+| F10 | Review the text in the field you are writing in (see *Review field*) |
 
 F8 and F9 are swallowed system-wide while the app runs, so the target app never receives them. Esc is deliberately
 not used. (On Mac use fn+F8 / fn+F9 on laptop keyboards.) The GUI also has Start (3-second countdown so you can click into the target), Pause/Resume and Stop buttons.
@@ -137,6 +138,37 @@ A small always-on-top window (draggable by its title strip, remembers its positi
 WPM, elapsed/ETA, typed chars, typos fixed and revisions, with START / PAUSE / STOP buttons, `[⌂]` (bring the main
 window to front) and `[x]` (hide). It never takes keyboard focus, so its START begins after ~0.3 s with no
 countdown. Turn it off or on with command `8) OVERLAY` in the main window (saved in settings).
+
+### Keyboard guard
+
+Setting **7) KEYBOARD GUARD** (default off):
+
+* **While typing** your physical keys are blocked so a stray keypress cannot end up in the text (F8/F9/F10 keep
+  working; the app's own keystrokes are never blocked). On macOS this needs an active event tap (Accessibility);
+  with only Input Monitoring the app logs that it cannot block.
+* **While paused** you can type freely. The guard counts what you add, and on resume backspaces it first, so what you
+  wrote during the pause does not end up in the text (characters of the typed text you deleted are re-typed). If you
+  move the caret while paused (arrows, Home/End, a click into the field, paste/undo shortcuts), it cannot know what
+  to erase: then nothing is erased and the log asks you to check the cursor position.
+* **Focus guard**: if another window (or a Human Typer window) comes to the front while typing, it pauses so keys
+  never land in the wrong app. Resuming first checks that the target is in front again.
+
+The main window's RESUME button counts down 3 s so you can click back into the field (F9 resumes at once).
+
+### Review field (F10)
+
+Write the text yourself, then let the local AI polish it in place:
+
+1. In the field, press **F10** (fn+F10 on Mac), or click **[ F10 REVIEW FIELD ]** (main window or AI window,
+   IMPROVE mode) and click into the field during the countdown.
+2. Human Typer reads the field (UI Automation / AX, else Select All + Copy with your clipboard restored; max 6000
+   characters) and improves it with the AI model, language and style from the AI window.
+3. The **REVIEW** window shows your text (red = will be replaced) and the editable improved version (blue = will be
+   typed). Change the style and **REDO**, or edit it by hand. Nothing touches your field until you press
+   **APPLY IN FIELD**.
+4. Click into the field and press **F8** (or START). The typer goes to each change, backspaces the old words and
+   types the new ones with human timing, using the same verified locating as revisions. A change whose location
+   cannot be verified is skipped, never deleted blindly (`applied N of M edits`).
 
 ## Revisions: `[first][revised]`
 
@@ -209,6 +241,11 @@ account) and sends the result to the paste box.
 * **Options**: length (any number of words; the slider covers 50-800), language (auto / English / Bokmål /
   Nynorsk), tone (neutral / casual / formal / student), and the number of `[draft][final]` revision pairs.
   The output is editable; **USE -> PASTE BOX** replaces the paste box, **COPY** copies it.
+* **IMPROVE mode** (MODE switch at the top): paste your own sentences and get better ones out. Styles: fix (spelling
+  and grammar only), clearer, formal, casual, shorter. It rewrites paragraph by paragraph in the same language
+  (never translates in auto). With **REVISE: ON** (default) the result is `[your sentence][improved sentence]` pairs,
+  so the typer first types your wording and later revises it into the improved version.
+* The AI window always opens above the main window, also when ALWAYS ON TOP is on.
 * **Running from source**: fetch the engine once with `.\build.ps1 -FetchEngine` (or `python tools/fetch_engine.py`).
   It is extracted to `packaging/vendor/llama/` (git-ignored). `.\build.ps1` does this automatically.
 
